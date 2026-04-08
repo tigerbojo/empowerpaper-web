@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --glass-bg: rgba(255, 255, 255, 0.1);
+  --glass-stroke: rgba(255, 255, 255, 0.12);
+  --glass-highlight: rgba(255, 255, 255, 0.26);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "SF Pro Display", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(127, 211, 255, 0.14), transparent 24%),
+    radial-gradient(circle at 85% 20%, rgba(139, 243, 255, 0.12), transparent 26%),
+    linear-gradient(180deg, #07101c 0%, #08111f 100%);
+}
+
+button, input, select, textarea {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(127, 211, 255, 0.18);
+}
+
+@layer components {
+  .glass-panel {
+    @apply rounded-4xl border border-line bg-white/10 shadow-glow backdrop-blur-xl;
+  }
+
+  .section-title {
+    @apply text-2xl font-semibold tracking-tight text-white;
+  }
+
+  .section-copy {
+    @apply text-sm leading-6 text-slate-300;
+  }
+}

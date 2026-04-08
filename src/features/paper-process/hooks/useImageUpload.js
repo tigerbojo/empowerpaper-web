@@ -1,0 +1,48 @@
+import { useEffect, useMemo, useState } from 'react'
+import { validateImageFile } from '@/utils/validators'
+import { compressImage } from '../utils/imageCompression'
+
+export function useImageUpload() {
+  const [file, setFile] = useState(null)
+  const [error, setError] = useState('')
+  const [compressed, setCompressed] = useState(null)
+  const [isCompressing, setIsCompressing] = useState(false)
+
+  const previewUrl = useMemo(
+    () => compressed?.previewUrl || (file ? URL.createObjectURL(file) : ''),
+    [compressed, file],
+  )
+
+  useEffect(() => {
+    return () => {
+      if (compressed?.previewUrl) URL.revokeObjectURL(compressed.previewUrl)
+    }
+  }, [compressed])
+
+  const onSelectFile = async (nextFile) => {
+    const validation = validateImageFile(nextFile)
+    setError(validation)
+    if (validation) return
+
+    setIsCompressing(true)
+    setFile(nextFile)
+
+    try {
+      const nextCompressed = await compressImage(nextFile)
+      setCompressed(nextCompressed)
+    } catch (compressError) {
+      setError(compressError.message)
+    } finally {
+      setIsCompressing(false)
+    }
+  }
+
+  return {
+    file,
+    error,
+    previewUrl,
+    compressed,
+    isCompressing,
+    onSelectFile,
+  }
+}
