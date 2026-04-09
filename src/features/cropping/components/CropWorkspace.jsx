@@ -5,7 +5,7 @@ import GlassCard from '@/components/ui/GlassCard'
 import Button from '@/components/ui/Button'
 import usePaperStore from '@/store/usePaperStore'
 import useUiStore from '@/store/useUiStore'
-import { cropCanvasToBlob } from '@/features/cropping/utils/canvasCrop'
+import { blobToDataUrl, cropCanvasToBlob } from '@/features/cropping/utils/canvasCrop'
 import { useCropActions } from '@/features/cropping/hooks/useCropActions'
 
 function buildFallbackTags(index) {
@@ -45,6 +45,7 @@ export default function CropWorkspace() {
         imageSmoothingQuality: 'high',
       })
       const blob = await cropCanvasToBlob(canvas)
+      const dataUrl = await blobToDataUrl(blob)
       const localUrl = URL.createObjectURL(blob)
       const data = cropperRef.current.cropper.getData(true)
       const nextIndex = crops.length
@@ -57,6 +58,7 @@ export default function CropWorkspace() {
       addCrop({
         id: localCropId,
         imageUrl: localUrl,
+        imageDataUrl: dataUrl,
         width,
         height,
         x,
@@ -67,7 +69,7 @@ export default function CropWorkspace() {
 
       const result = await saveCropWithSuggestions({
         blob,
-        filename: `crop-${nextIndex + 1}.webp`,
+        filename: `crop-${nextIndex + 1}.png`,
         paperId: currentPaperId,
         imageUrl: localUrl,
         width,
@@ -79,6 +81,7 @@ export default function CropWorkspace() {
       updateCrop(localCropId, {
         remoteId: result.cropId,
         imageUrl: result.imageUrl || localUrl,
+        imageDataUrl: dataUrl,
         tags: result.tags?.length ? result.tags : buildFallbackTags(nextIndex),
         status: result.source === 'mock' ? 'mocked' : 'ready',
       })
@@ -173,3 +176,4 @@ export default function CropWorkspace() {
     </GlassCard>
   )
 }
+
