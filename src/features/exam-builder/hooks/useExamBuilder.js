@@ -16,7 +16,7 @@ function normalizeGenerateResponse(data = {}) {
 async function buildFallbackPdf(payload) {
   const items = await preparePdfItems(payload.items)
   const document = createElement(ExamPdfDocument, {
-    title: payload.title || '考卷新生複習卷',
+    title: payload.title || '增強智卷複習卷',
     paperSize: payload.paperSize || 'A4 直式',
     items,
   })
@@ -24,7 +24,7 @@ async function buildFallbackPdf(payload) {
 
   return {
     blob,
-    filename: `${payload.title || '考卷新生複習卷'}-fallback.pdf`,
+    filename: `${payload.title || '增強智卷複習卷'}-fallback.pdf`,
     source: 'fallback-pdf',
     debug: buildMockPdfPayload(payload),
   }
@@ -44,7 +44,7 @@ export function useExamBuilder() {
         const response = await examApi.exportPdf(payload)
         return {
           blob: response.data,
-          filename: `${payload.title || 'paper-rebirth'}.pdf`,
+          filename: `${payload.title || 'EmpowerPaper'}.pdf`,
           source: 'api',
         }
       } catch {

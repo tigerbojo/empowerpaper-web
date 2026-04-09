@@ -1,5 +1,5 @@
 ﻿const env = {
-  appName: import.meta.env.VITE_APP_NAME || '考卷新生 Web 預覽版',
+  appName: import.meta.env.VITE_APP_NAME || '增強智卷 EmpowerPaper',
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api',
   apiTimeoutMs: Number(import.meta.env.VITE_API_TIMEOUT_MS || 30000),
   firebase: {

@@ -13,8 +13,8 @@ export default function Sidebar() {
     <aside className="glass-panel hidden w-[300px] flex-col justify-between p-5 lg:flex">
       <div>
         <div className="mb-8 rounded-3xl border border-white/10 bg-white/8 p-4">
-          <p className="text-xs uppercase tracking-[0.24em] text-cyan-200/80">System</p>
-          <h2 className="mt-3 text-2xl font-semibold text-white">考卷新生</h2>
+          <p className="text-xs uppercase tracking-[0.24em] text-cyan-200/80">EmpowerPaper</p>
+          <h2 className="mt-3 text-2xl font-semibold text-white">增強智卷</h2>
           <p className="mt-2 text-sm leading-6 text-slate-300">
             採用 Apple 風格的 Web 工作台，前端聚焦在流暢互動，未來可與 Flutter App 共用同一套 API。
           </p>

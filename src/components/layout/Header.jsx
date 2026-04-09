@@ -4,8 +4,8 @@ import env from '@/config/env'
 
 const titles = {
   '/': {
-    title: '考卷新生儀表板',
-    subtitle: '掌握目前上傳、裁切、標籤與組卷進度，作為 Google 生態版前端的控制中心。',
+    title: '增強智卷儀表板',
+    subtitle: '掌握目前上傳、裁切、標籤與組卷進度，作為 EmpowerPaper 的工作中樞。',
   },
   '/upload': {
     title: '上傳與預處理',

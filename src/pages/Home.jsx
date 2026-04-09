@@ -1,4 +1,4 @@
-import GlassCard from '@/components/ui/GlassCard'
+﻿import GlassCard from '@/components/ui/GlassCard'
 import Button from '@/components/ui/Button'
 import { useNavigate } from 'react-router-dom'
 import usePaperStore from '@/store/usePaperStore'
@@ -7,9 +7,9 @@ import { isFirebaseReady } from '@/services/firebase'
 import AuthStatusCard from '@/features/auth/components/AuthStatusCard'
 
 const metrics = [
-  { label: '已收錄裁切題數', value: '18', note: '可持續擴充為雲端題庫' },
-  { label: '本月處理試卷頁數', value: '264', note: '前端先做壓縮再送後端' },
-  { label: '目標輸出格式', value: 'A4 / PDF', note: '支援列印與雲端分享' },
+  { label: '最近上傳批次', value: '18', note: '用來展示近期處理與同步進度' },
+  { label: '已建立裁切題目', value: '264', note: '可做為後續題庫與組卷素材' },
+  { label: '輸出格式', value: 'A4 / PDF', note: '支援預覽後匯出複習卷' },
 ]
 
 export default function Home() {
@@ -20,9 +20,9 @@ export default function Home() {
     <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
       <div className="space-y-5">
         <GlassCard
-          title="考卷新生儀表板"
-          description="這個 Web 預覽版負責把上傳、去筆跡、錯題框選、標籤建議與智慧組卷整合成一條順手的流程，後端預計採用 FastAPI 串接 Google Cloud 與 AI 服務。"
-          actions={<Button onClick={() => navigate('/upload')}>開始處理新考卷</Button>}
+          title="增強智卷控制中心"
+          description="這裡是 EmpowerPaper 的前端工作台，讓我們能從試卷上傳、題目裁切、AI 標籤到複習卷輸出，一路串接到 FastAPI 與 Google Cloud 生態。"
+          actions={<Button onClick={() => navigate('/upload')}>開始上傳試卷</Button>}
         >
           <div className="grid gap-4 md:grid-cols-3">
             {metrics.map((metric) => (
@@ -35,12 +35,15 @@ export default function Home() {
           </div>
         </GlassCard>
 
-        <GlassCard title="目前系統狀態" description="先把本機工作流跑順，再逐步串上 Firebase、Cloud Vision、GCS 與 PDF 匯出。">
+        <GlassCard
+          title="系統摘要"
+          description="這裡集中顯示目前前端資料流與雲端配置，方便快速確認整條流程是否接通。"
+        >
           <div className="space-y-3 text-sm text-slate-300">
-            <div>目前裁切題數：{crops.length}</div>
-            <div>壓縮策略：最長邊 2048px，統一轉 WebP</div>
-            <div>後端目標：FastAPI + OpenCV + Cloud Vision + LLM</div>
-            <div>Firebase 狀態：{isFirebaseReady ? '已設定' : '尚未填入前端憑證'}</div>
+            <div>目前已建立裁切題目：{crops.length}</div>
+            <div>圖片前處理：最長邊 2048px，前端壓縮後再送出</div>
+            <div>後端規劃：FastAPI + OpenCV + Cloud Vision + LLM</div>
+            <div>Firebase 狀態：{isFirebaseReady ? '已設定完成' : '尚未填入正式憑證'}</div>
             <div>API Base URL：{env.apiBaseUrl}</div>
           </div>
         </GlassCard>
