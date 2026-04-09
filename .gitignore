@@ -4,3 +4,8 @@ node_modules
 .env.local
 .vscode
 .DS_Store
+
+backend/.venv
+backend/data/
+__pycache__/
+*.pyc

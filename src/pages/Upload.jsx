@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Button from '@/components/ui/Button'
 import GlassCard from '@/components/ui/GlassCard'
@@ -104,8 +104,8 @@ export default function Upload() {
         setUploadStage('completed')
         pushToast({
           tone: 'success',
-          title: '處理完成',
-          description: '後端已直接回傳去筆跡結果，可以前往框選頁。',
+          title: '預處理完成',
+          description: '後端已直接回傳 clean image，現在可以前往框選頁。',
         })
         setIsProcessing(false)
         return
@@ -134,8 +134,8 @@ export default function Upload() {
         setUploadStage('completed')
         pushToast({
           tone: 'success',
-          title: '處理完成',
-          description: '已取得 clean image，接下來可以開始框選錯題。',
+          title: '預處理完成',
+          description: '後端已完成清理並回傳 clean image。',
         })
         setIsProcessing(false)
         return
@@ -164,11 +164,11 @@ export default function Upload() {
       }
 
       throw new Error('後端尚未回傳 clean image 或 job id')
-    } catch (error) {
+    } catch (caughtError) {
       pushToast({
         tone: 'warning',
-        title: '後端尚未完整接通',
-        description: error.message || '目前改用本地模擬流程，方便你先繼續操作。',
+        title: '後端暫時無法完成處理',
+        description: caughtError.message || '先切回本地 fallback，避免整個流程卡住。',
       })
       await simulateProcessing()
     }
@@ -177,16 +177,16 @@ export default function Upload() {
   const statusLabel = isCompressing
     ? '正在壓縮圖片…'
     : uploadStage === 'uploading'
-      ? `正在上傳到後端 (${formatPercent(uploadProgress)})`
+      ? `正在上傳圖片 (${formatPercent(uploadProgress)})`
       : uploadStage === 'cleaning'
-        ? '後端正在排入去筆跡任務…'
+        ? '後端正在建立去痕跡任務…'
         : uploadStage === 'polling'
-          ? '正在等待 Cloud Run / FastAPI 回傳清理結果…'
-          : `正在模擬後端處理 (${formatPercent(uploadProgress)})`
+          ? '正在等待 Cloud Run / FastAPI 回傳結果…'
+          : `正在整理流程 (${formatPercent(uploadProgress)})`
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
-      <GlassCard title="上傳試卷" description="先在瀏覽器內把圖片壓縮成 WebP，再交給後端做去筆跡與拉平，減少頻寬與等待時間。">
+      <GlassCard title="上傳試卷" description="先在瀏覽器中壓縮圖片，再交給 FastAPI 與 OpenCV 進行去痕跡、拉平與後續分析。">
         <label className="flex min-h-[260px] cursor-pointer flex-col items-center justify-center rounded-[28px] border border-dashed border-cyan-200/25 bg-slate-950/35 px-6 text-center text-slate-300 transition hover:bg-slate-950/45">
           <input type="file" accept="image/*" className="hidden" onChange={(event) => onSelectFile(event.target.files?.[0])} />
           <div className="text-lg font-medium text-white">選擇要處理的試卷照片</div>
@@ -206,8 +206,8 @@ export default function Upload() {
         {!file && (
           <div className="mt-4">
             <NoticeBanner
-              title="尚未選擇試卷"
-              description="先放入一張試卷照片，系統才會開始壓縮與送出處理。"
+              title="尚未選擇試卷照片"
+              description="先上傳一張清楚的考卷圖片，系統才會開始壓縮與預處理。"
             />
           </div>
         )}
@@ -217,7 +217,7 @@ export default function Upload() {
             <NoticeBanner
               tone="success"
               title="預處理已完成"
-              description={`目前 paper id：${currentPaperId || '尚未回傳'}，你可以前往框選頁開始整理錯題。`}
+              description={`目前 paper id：${currentPaperId || '尚未取得'}，你可以前往框選頁開始整理題目。`}
               actions={<Button size="sm" onClick={() => navigate('/edit')}>前往框選頁</Button>}
             />
           </div>
@@ -227,8 +227,8 @@ export default function Upload() {
           <div className="mt-4">
             <NoticeBanner
               tone="warning"
-              title="仍在等待後端結果"
-              description={`目前階段：${uploadStage}，job id：${currentJobId || '尚未建立'}。若後端未接通，系統會自動改用示範流程。`}
+              title="正在等待去痕跡結果"
+              description={`目前階段：${uploadStage}｜job id：${currentJobId || '尚未建立'}。若等待過久，可稍後重新整理再試。`}
             />
           </div>
         )}
@@ -249,7 +249,7 @@ export default function Upload() {
             <img src={previewUrl} alt="preview" className="max-h-[620px] w-full rounded-[22px] object-contain" />
           ) : (
             <div className="flex min-h-[620px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">
-              上傳完成後，這裡會顯示原始試卷預覽，方便你確認畫面與裁切方向。
+              上傳完成後，右側會顯示原始圖片預覽，方便你確認角度、亮度與內容是否正確。
             </div>
           )}
         </div>

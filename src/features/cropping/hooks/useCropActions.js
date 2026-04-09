@@ -1,4 +1,4 @@
-import { useMutation } from '@tanstack/react-query'
+﻿import { useMutation } from '@tanstack/react-query'
 import { paperApi } from '@/services/paperApi'
 import { examApi } from '@/services/examApi'
 
@@ -20,7 +20,7 @@ function buildMockTags({ width, height, y }) {
   if (height > width * 0.7) return ['國中數學', '幾何', '圖形']
   if (y < 500) return ['國中數學', '等差數列', '基礎']
   if (y < 1100) return ['國中數學', '數列', '進階']
-  return ['國中數學', '應用題', '精熟']
+  return ['國中數學', '函數', '精熟']
 }
 
 export function useCropActions() {
