@@ -4,6 +4,7 @@ import Home from '@/pages/Home'
 import Upload from '@/pages/Upload'
 import Edit from '@/pages/Edit'
 import Generate from '@/pages/Generate'
+import History from '@/pages/History'
 
 const router = createBrowserRouter([
   {
@@ -14,6 +15,7 @@ const router = createBrowserRouter([
       { path: 'upload', element: <Upload /> },
       { path: 'edit', element: <Edit /> },
       { path: 'generate', element: <Generate /> },
+      { path: 'history', element: <History /> },
     ],
   },
 ])

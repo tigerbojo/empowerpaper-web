@@ -6,6 +6,7 @@ const items = [
   { to: '/upload', label: '上傳試卷', hint: '壓縮圖片並送往後端' },
   { to: '/edit', label: '框選錯題', hint: '人工微調與 AI 標籤建議' },
   { to: '/generate', label: '產出複習卷', hint: 'A4 預覽與 PDF 匯出' },
+  { to: '/history', label: '歷史記錄', hint: '查看之前處理過的考卷' },
 ]
 
 export default function Sidebar() {

@@ -26,6 +26,28 @@ def _build_local_ocr_path(paper_id: str, mode: str) -> Path:
     return storage.cleaned / f'{paper_id}-{suffix}.png'
 
 
+@router.get('/history')
+async def list_papers(limit: int = 50) -> dict:
+    """歷史記錄：列出所有上傳過的考卷"""
+    if not settings.use_supabase:
+        return {'papers': [], 'message': 'history requires Supabase backend'}
+
+    papers = storage.list_papers(limit=limit)
+    items = []
+    for p in papers:
+        cleaned_paths = p.get('cleaned_paths') or {}
+        # 找預設 darkness=1.0 的清理結果
+        cleaned_path = cleaned_paths.get('1.0') or next(iter(cleaned_paths.values()), None)
+        items.append({
+            'paper_id': p['paper_id'],
+            'original_url': storage.public_url(p['original_path']),
+            'cleaned_url': storage.public_url(cleaned_path) if cleaned_path else None,
+            'darkness': p.get('darkness', 1.0),
+            'created_at': p.get('created_at'),
+        })
+    return {'papers': items}
+
+
 @router.post('/upload', response_model=UploadPaperResponse)
 async def upload_paper(file: UploadFile = File(...)) -> UploadPaperResponse:
     if not file.content_type or not file.content_type.startswith('image/'):

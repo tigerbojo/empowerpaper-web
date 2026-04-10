@@ -2,10 +2,10 @@ import { NavLink } from 'react-router-dom'
 import clsx from 'clsx'
 
 const items = [
-  { to: '/', label: '儀表板', icon: '📊' },
   { to: '/upload', label: '上傳', icon: '📤' },
   { to: '/edit', label: '框選', icon: '✂️' },
   { to: '/generate', label: '組卷', icon: '📄' },
+  { to: '/history', label: '記錄', icon: '📚' },
 ]
 
 export default function MobileNav() {

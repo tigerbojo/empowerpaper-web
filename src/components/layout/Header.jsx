@@ -19,6 +19,10 @@ const titles = {
     title: '智慧組卷與匯出',
     subtitle: '整理已挑選的題目，產生 A4 預覽與 PDF，之後可接 Cloud Storage 與分享流程。',
   },
+  '/history': {
+    title: '歷史記錄',
+    subtitle: '查看之前處理過的考卷，可以直接點開繼續編輯。',
+  },
 }
 
 export default function Header() {
