@@ -241,24 +241,25 @@ def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.nd
         iterations=1,
     ) > 0
 
-    # 4. 印刷字加深：對比拉伸 + gamma（受 darkness 參數控制）
-    # darkness=1.0 → 預設 v9 行為
-    # darkness>1.0 → 更深；darkness<1.0 → 較淡
-    # 對比拉伸的低點：darkness 越大，低點越高（讓暗的更暗）
-    low_point = 50 * darkness  # 1.0 → 50, 1.5 → 75, 0.5 → 25
-    high_point = 180 + (1.0 - darkness) * 30  # 1.0 → 180, 1.5 → 165, 0.5 → 195
-    stretched = np.clip((result - low_point) * 200.0 / max(high_point - low_point, 50), 0, 200)
-
-    # gamma：darkness 越大，gamma 越小，暗的更暗
-    gamma = 0.7 / darkness  # 1.0 → 0.7, 1.5 → 0.47, 0.5 → 1.4
-    gamma = max(0.4, min(1.5, gamma))
+    # 4. 印刷字加深：對比拉伸 + gamma + darkness 倍數
+    # 基礎處理（v9 預設）
+    stretched = np.clip((result - 50) * 200.0 / 130.0, 0, 200)
     normalized = stretched / 255.0
-    gamma_corrected = np.power(np.clip(normalized, 0, 1), gamma) * 255.0
+    gamma_corrected = np.power(np.clip(normalized, 0, 1), 0.7) * 255.0
+    base_darkened = np.where(result < 220, gamma_corrected, result)
 
-    # 印刷字位置取較暗的版本
-    darkened = np.where(result < 220, gamma_corrected, result)
+    # darkness 倍數：直接對暗像素做乘法縮放
+    # darkness=1.0 → 維持 v9 預設
+    # darkness=1.5 → 印刷字明顯加深
+    # darkness=0.5 → 印刷字稍淡（不會消失）
+    if darkness != 1.0:
+        darkness_amount = 255.0 - base_darkened
+        # 0.5→0.6, 1.0→1.0, 1.5→1.6
+        scale = 1.0 + (darkness - 1.0) * 1.2
+        new_darkness = darkness_amount * scale
+        base_darkened = np.clip(255.0 - new_darkness, 0, 255)
 
-    result_print = np.where(printed_dilated, darkened, result)
+    result_print = np.where(printed_dilated, base_darkened, result)
 
     # 5. 非印刷區清淡灰
     avg_5x5 = cv2.boxFilter(result_print, ddepth=-1, ksize=(5, 5))
