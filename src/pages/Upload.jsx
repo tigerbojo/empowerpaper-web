@@ -183,6 +183,37 @@ export default function Upload() {
   const [rotation, setRotation] = useState(0)
   // 旋轉前的「基礎」圖片（每次重新處理或載入時更新）
   const baseCleanedImageRef = useRef(null)
+  // Zoom + pan
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const isDraggingRef = useRef(false)
+  const dragStartRef = useRef({ x: 0, y: 0 })
+  const panStartRef = useRef({ x: 0, y: 0 })
+
+  const handleZoomIn = () => setZoom((z) => Math.min(5, z + 0.5))
+  const handleZoomOut = () => setZoom((z) => Math.max(1, z - 0.5))
+  const handleZoomReset = () => { setZoom(1); setPan({ x: 0, y: 0 }) }
+
+  const handleWheel = (e) => {
+    e.preventDefault()
+    if (e.deltaY < 0) setZoom((z) => Math.min(5, z + 0.25))
+    else setZoom((z) => Math.max(1, z - 0.25))
+  }
+
+  const handleMouseDown = (e) => {
+    if (zoom <= 1) return
+    isDraggingRef.current = true
+    dragStartRef.current = { x: e.clientX, y: e.clientY }
+    panStartRef.current = { ...pan }
+  }
+  const handleMouseMove = (e) => {
+    if (!isDraggingRef.current) return
+    setPan({
+      x: panStartRef.current.x + (e.clientX - dragStartRef.current.x),
+      y: panStartRef.current.y + (e.clientY - dragStartRef.current.y),
+    })
+  }
+  const handleMouseUp = () => { isDraggingRef.current = false }
 
   // 旋轉圖片：用 canvas 讀原圖 → 旋轉 → toDataURL
   const rotateImage = async (imageUrl, angleDeg) => {
@@ -368,10 +399,38 @@ export default function Upload() {
           <div>
             <div className="mb-2 flex items-center justify-between">
               <div className="text-sm font-medium text-slate-300">處理後預覽</div>
-              {isAdjusting && <div className="text-xs text-cyan-300">套用新黑度中…</div>}
+              <div className="flex items-center gap-2">
+                {isAdjusting && <div className="text-xs text-cyan-300">套用新黑度中…</div>}
+                {cleanedImage && (
+                  <div className="flex items-center gap-1">
+                    <button onClick={handleZoomOut} className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300 hover:bg-white/10" title="縮小">−</button>
+                    <button onClick={handleZoomReset} className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300 hover:bg-white/10 min-w-[44px]" title="重設">{Math.round(zoom * 100)}%</button>
+                    <button onClick={handleZoomIn} className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300 hover:bg-white/10" title="放大">+</button>
+                  </div>
+                )}
+              </div>
             </div>
             {cleanedImage ? (
-              <img src={cleanedImage} alt="cleaned preview" className="max-h-[400px] w-full rounded-[22px] object-contain border border-white/10 bg-white" />
+              <div
+                className="relative h-[500px] w-full overflow-hidden rounded-[22px] border border-white/10 bg-white"
+                onWheel={handleWheel}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+                style={{ cursor: zoom > 1 ? (isDraggingRef.current ? 'grabbing' : 'grab') : 'default' }}
+              >
+                <img
+                  src={cleanedImage}
+                  alt="cleaned preview"
+                  draggable={false}
+                  className="h-full w-full object-contain select-none transition-transform"
+                  style={{
+                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                    transformOrigin: 'center center',
+                  }}
+                />
+              </div>
             ) : (
               <div className="flex min-h-[300px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">完成處理後，這裡會顯示去除手寫、加深印刷字的乾淨版本。</div>
             )}
