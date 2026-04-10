@@ -1,0 +1,19 @@
+{
+  "name": "增強智卷 EmpowerPaper",
+  "short_name": "增強智卷",
+  "description": "上傳考卷照片，自動去除手寫痕跡、加強印刷字、產出乾淨的複習卷",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#08111f",
+  "theme_color": "#08111f",
+  "lang": "zh-Hant",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

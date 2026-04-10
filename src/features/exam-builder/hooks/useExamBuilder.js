@@ -1,19 +1,10 @@
 ﻿import { createElement } from 'react'
 import { pdf } from '@react-pdf/renderer'
 import { useMutation } from '@tanstack/react-query'
-import { examApi } from '../api'
 import ExamPdfDocument from '../components/ExamPdfDocument'
-import { buildMockPdfPayload, preparePdfItems } from '../utils/pdfLayout'
+import { preparePdfItems } from '../utils/pdfLayout'
 
-function normalizeGenerateResponse(data = {}) {
-  return {
-    previewUrl: data.previewUrl || data.preview_url || data.url || null,
-    pdfUrl: data.pdfUrl || data.pdf_url || null,
-    raw: data,
-  }
-}
-
-async function buildFallbackPdf(payload) {
+async function buildPdf(payload) {
   const items = await preparePdfItems(payload.items)
   const document = createElement(ExamPdfDocument, {
     title: payload.title || '增強智卷複習卷',
@@ -24,33 +15,23 @@ async function buildFallbackPdf(payload) {
 
   return {
     blob,
-    filename: `${payload.title || '增強智卷複習卷'}-fallback.pdf`,
-    source: 'fallback-pdf',
-    debug: buildMockPdfPayload(payload),
+    filename: `${payload.title || '增強智卷複習卷'}.pdf`,
+    source: 'client',
   }
 }
 
 export function useExamBuilder() {
+  // 預覽 = 同樣建構 PDF blob，但不下載，只回 url
   const generateMutation = useMutation({
     mutationFn: async (payload) => {
-      const { data } = await examApi.generateExam(payload)
-      return normalizeGenerateResponse(data)
+      const result = await buildPdf(payload)
+      const previewUrl = URL.createObjectURL(result.blob)
+      return { previewUrl, blob: result.blob }
     },
   })
 
   const exportMutation = useMutation({
-    mutationFn: async (payload) => {
-      try {
-        const response = await examApi.exportPdf(payload)
-        return {
-          blob: response.data,
-          filename: `${payload.title || 'EmpowerPaper'}.pdf`,
-          source: 'api',
-        }
-      } catch {
-        return buildFallbackPdf(payload)
-      }
-    },
+    mutationFn: async (payload) => buildPdf(payload),
   })
 
   return {

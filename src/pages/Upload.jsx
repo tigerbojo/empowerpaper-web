@@ -412,7 +412,7 @@ export default function Upload() {
             </div>
             {cleanedImage ? (
               <div
-                className="relative h-[500px] w-full overflow-hidden rounded-[22px] border border-white/10 bg-white"
+                className="relative h-[300px] sm:h-[400px] lg:h-[500px] w-full overflow-hidden rounded-[22px] border border-white/10 bg-white"
                 onWheel={handleWheel}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}

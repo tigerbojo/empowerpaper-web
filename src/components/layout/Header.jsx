@@ -27,13 +27,13 @@ export default function Header() {
   const current = titles[location.pathname] ?? titles['/']
 
   return (
-    <header className="glass-panel flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between lg:p-6">
+    <header className="glass-panel flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between lg:gap-4 lg:p-6">
       <div>
-        <p className="mb-2 text-xs uppercase tracking-[0.24em] text-cyan-200/80">{env.appName}</p>
-        <h1 className="text-3xl font-semibold tracking-tight text-white">{current.title}</h1>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">{current.subtitle}</p>
+        <p className="mb-1 text-[10px] uppercase tracking-[0.24em] text-cyan-200/80 lg:mb-2 lg:text-xs">{env.appName}</p>
+        <h1 className="text-xl font-semibold tracking-tight text-white sm:text-2xl lg:text-3xl">{current.title}</h1>
+        <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-300 lg:mt-2 lg:text-sm lg:leading-6">{current.subtitle}</p>
       </div>
-      <div className="rounded-full border border-line bg-white/10 px-4 py-3 text-sm text-slate-200">
+      <div className="hidden rounded-full border border-line bg-white/10 px-4 py-2 text-sm text-slate-200 lg:block">
         {user ? `歡迎回來，${user.name}` : '尚未登入，將以訪客模式操作'}
       </div>
     </header>
