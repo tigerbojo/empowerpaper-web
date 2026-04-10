@@ -196,11 +196,11 @@ def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.nd
     - 印刷字區域：對比拉伸 + gamma → 又黑又銳利、無光暈
     - 細小符號（√、(A)、分數線、括號）：從原始 binary 救回保護
     - 非印刷區域：grayfilter 清除淡灰殘留
-    - darkness: 0.5（較淡）~ 1.5（較深），預設 1.0
+    - darkness: 0.5（較淡）~ 2.0（最深），預設 1.0
     """
     result = image.astype(np.float32)
     # 黑度範圍 clamp
-    darkness = max(0.5, min(1.5, darkness))
+    darkness = max(0.5, min(2.0, darkness))
 
     # 1. v3 留下的印刷字
     is_printed = binary < 128
@@ -250,12 +250,12 @@ def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.nd
 
     # darkness 倍數：直接對暗像素做乘法縮放
     # darkness=1.0 → 維持 v9 預設
-    # darkness=1.5 → 印刷字明顯加深
+    # darkness=2.0 → 印刷字超深、極黑
     # darkness=0.5 → 印刷字稍淡（不會消失）
     if darkness != 1.0:
         darkness_amount = 255.0 - base_darkened
-        # 0.5→0.6, 1.0→1.0, 1.5→1.6
-        scale = 1.0 + (darkness - 1.0) * 1.2
+        # 0.5→0.6, 1.0→1.0, 1.5→2.2, 2.0→3.4
+        scale = 1.0 + (darkness - 1.0) * 2.4
         new_darkness = darkness_amount * scale
         base_darkened = np.clip(255.0 - new_darkness, 0, 255)
 

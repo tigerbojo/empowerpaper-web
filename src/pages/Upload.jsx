@@ -321,7 +321,7 @@ export default function Upload() {
                 <input
                   type="range"
                   min="0.5"
-                  max="1.5"
+                  max="2.0"
                   step="0.05"
                   value={darkness}
                   onChange={(e) => setDarkness(parseFloat(e.target.value))}
