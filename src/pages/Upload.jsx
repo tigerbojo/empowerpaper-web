@@ -146,6 +146,8 @@ export default function Upload() {
         setProcessingStatus('completed')
         setUploadStage('completed')
         lastProcessedDarkness.current = darkness
+        baseCleanedImageRef.current = cleanResult.cleanedImageUrl
+        setRotation(0)
         pushToast({ tone: 'success', title: '預處理完成', description: '可以拖動下方滑桿微調印刷字深淺。' })
         setIsProcessing(false)
         return
@@ -177,6 +179,55 @@ export default function Upload() {
 
   // 用 ref 追蹤上次處理過的 darkness，避免初次處理完成觸發 reprocess
   const lastProcessedDarkness = useRef(null)
+  // 累積旋轉角度（純前端）
+  const [rotation, setRotation] = useState(0)
+  // 旋轉前的「基礎」圖片（每次重新處理或載入時更新）
+  const baseCleanedImageRef = useRef(null)
+
+  // 旋轉圖片：用 canvas 讀原圖 → 旋轉 → toDataURL
+  const rotateImage = async (imageUrl, angleDeg) => {
+    return new Promise((resolve, reject) => {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        const radians = (angleDeg * Math.PI) / 180
+        // 90/270 度時 width/height 互換
+        if (angleDeg % 180 === 0) {
+          canvas.width = img.width
+          canvas.height = img.height
+        } else {
+          canvas.width = img.height
+          canvas.height = img.width
+        }
+        const ctx = canvas.getContext('2d')
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        ctx.translate(canvas.width / 2, canvas.height / 2)
+        ctx.rotate(radians)
+        ctx.drawImage(img, -img.width / 2, -img.height / 2)
+        canvas.toBlob((blob) => {
+          if (!blob) return reject(new Error('canvas.toBlob 失敗'))
+          resolve(URL.createObjectURL(blob))
+        }, 'image/png')
+      }
+      img.onerror = () => reject(new Error('讀取圖片失敗'))
+      img.src = imageUrl
+    })
+  }
+
+  const handleRotate = async (delta) => {
+    if (!baseCleanedImageRef.current) return
+    const newAngle = (rotation + delta + 360) % 360
+    setRotation(newAngle)
+    try {
+      const rotatedUrl = await rotateImage(baseCleanedImageRef.current, newAngle)
+      setCleanedImage(rotatedUrl)
+      setSelectedEditImage(rotatedUrl, 'cleaned')
+    } catch (err) {
+      pushToast({ tone: 'warning', title: '旋轉失敗', description: err.message })
+    }
+  }
 
   // 滑桿 debounce：停止拖動 600ms 後才送請求
   useEffect(() => {
@@ -200,8 +251,21 @@ export default function Upload() {
         console.log('[reprocess result]', cleanResult)
 
         if (cleanResult.cleanedImageUrl) {
-          setCleanedImage(cleanResult.cleanedImageUrl)
-          setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
+          baseCleanedImageRef.current = cleanResult.cleanedImageUrl
+          // 如果有旋轉，套用旋轉後再 setCleanedImage
+          if (rotation !== 0) {
+            try {
+              const rotatedUrl = await rotateImage(cleanResult.cleanedImageUrl, rotation)
+              setCleanedImage(rotatedUrl)
+              setSelectedEditImage(rotatedUrl, 'cleaned')
+            } catch {
+              setCleanedImage(cleanResult.cleanedImageUrl)
+              setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
+            }
+          } else {
+            setCleanedImage(cleanResult.cleanedImageUrl)
+            setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
+          }
         }
       } catch (err) {
         console.error('[reprocess error]', err)
@@ -313,26 +377,40 @@ export default function Upload() {
             )}
 
             {cleanedImage && (
-              <div className="mt-4 rounded-[18px] border border-white/10 bg-slate-950/40 p-4 space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-300">印刷字加深</span>
-                  <span className="text-cyan-300 font-mono text-xs">{darkness.toFixed(2)}x</span>
+              <>
+                <div className="mt-4 rounded-[18px] border border-white/10 bg-slate-950/40 p-4 space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-slate-300">印刷字加深</span>
+                    <span className="text-cyan-300 font-mono text-xs">{darkness.toFixed(2)}x</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="2.0"
+                    step="0.05"
+                    value={darkness}
+                    onChange={(e) => setDarkness(parseFloat(e.target.value))}
+                    className="w-full accent-cyan-400"
+                  />
+                  <div className="flex justify-between text-[10px] text-slate-500">
+                    <span>較淡</span>
+                    <span>預設</span>
+                    <span>更深</span>
+                  </div>
                 </div>
-                <input
-                  type="range"
-                  min="0.5"
-                  max="2.0"
-                  step="0.05"
-                  value={darkness}
-                  onChange={(e) => setDarkness(parseFloat(e.target.value))}
-                  className="w-full accent-cyan-400"
-                />
-                <div className="flex justify-between text-[10px] text-slate-500">
-                  <span>較淡</span>
-                  <span>預設</span>
-                  <span>更深</span>
+
+                <div className="mt-3 rounded-[18px] border border-white/10 bg-slate-950/40 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-slate-300">頁面旋轉</div>
+                    <div className="text-xs text-slate-500">{rotation}°</div>
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <Button size="sm" variant="secondary" onClick={() => handleRotate(-90)}>↺ 左轉</Button>
+                    <Button size="sm" variant="secondary" onClick={() => handleRotate(90)}>↻ 右轉</Button>
+                    <Button size="sm" variant="secondary" onClick={() => handleRotate(180)}>⇅ 翻轉</Button>
+                  </div>
                 </div>
-              </div>
+              </>
             )}
           </div>
         </div>
