@@ -1,6 +1,6 @@
 ﻿const env = {
   appName: import.meta.env.VITE_APP_NAME || '增強智卷 EmpowerPaper',
-  apiBaseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api',
+  apiBaseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001/api',
   apiTimeoutMs: Number(import.meta.env.VITE_API_TIMEOUT_MS || 30000),
   firebase: {
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
