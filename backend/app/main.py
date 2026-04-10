@@ -18,4 +18,8 @@ app.add_middleware(
 
 app.include_router(health_router, prefix='/api')
 app.include_router(papers_router, prefix='/api')
-app.mount('/storage', StaticFiles(directory=str(settings.storage_root)), name='storage')
+
+# Local storage 才掛 /storage 靜態檔（Supabase mode 圖片走 Supabase 公開 URL）
+if not settings.use_supabase:
+    settings.storage_root.mkdir(parents=True, exist_ok=True)
+    app.mount('/storage', StaticFiles(directory=str(settings.storage_root)), name='storage')
