@@ -12,8 +12,10 @@ router = APIRouter(prefix='/papers', tags=['papers'])
 papers_index: dict[str, Path] = {}
 
 
-def _build_clean_path(paper_id: str, mode: str) -> Path:
-    suffix = 'cleaned' if mode == 'auto' else f'cleaned-{mode}'
+def _build_clean_path(paper_id: str, mode: str, darkness: float = 1.0) -> Path:
+    # darkness 不為 1.0 時加進檔名，讓不同 darkness 不會互相覆蓋
+    dk_suffix = '' if abs(darkness - 1.0) < 0.01 else f'-d{int(darkness * 100)}'
+    suffix = ('cleaned' if mode == 'auto' else f'cleaned-{mode}') + dk_suffix
     return storage.cleaned / f'{paper_id}-{suffix}.png'
 
 
@@ -22,12 +24,12 @@ def _build_ocr_path(paper_id: str, mode: str) -> Path:
     return storage.cleaned / f'{paper_id}-{suffix}.png'
 
 
-def _run_cleanup(paper_id: str, job_id: str, requested_mode: str) -> None:
+def _run_cleanup(paper_id: str, job_id: str, requested_mode: str, darkness: float = 1.0) -> None:
     try:
         original_path = papers_index[paper_id]
-        cleaned_path = _build_clean_path(paper_id, requested_mode)
+        cleaned_path = _build_clean_path(paper_id, requested_mode, darkness)
         ocr_path = _build_ocr_path(paper_id, requested_mode)
-        artifacts = cleanup_exam_image(original_path, cleaned_path, requested_mode, ocr_path)
+        artifacts = cleanup_exam_image(original_path, cleaned_path, requested_mode, ocr_path, darkness)
         job_store.complete(
             job_id,
             storage.public_url(artifacts.cleaned_path),
@@ -59,7 +61,7 @@ async def clean_paper(payload: CleanPaperRequest, background_tasks: BackgroundTa
     if payload.paper_id not in papers_index:
         raise HTTPException(status_code=404, detail='找不到對應的 paperId')
 
-    cleaned_path = _build_clean_path(payload.paper_id, payload.mode)
+    cleaned_path = _build_clean_path(payload.paper_id, payload.mode, payload.darkness)
     ocr_path = _build_ocr_path(payload.paper_id, payload.mode)
     if cleaned_path.exists():
         return CleanPaperResponse(
@@ -74,7 +76,7 @@ async def clean_paper(payload: CleanPaperRequest, background_tasks: BackgroundTa
 
     job_id = storage.new_job_id()
     job_store.create(payload.paper_id, job_id, payload.mode)
-    background_tasks.add_task(_run_cleanup, payload.paper_id, job_id, payload.mode)
+    background_tasks.add_task(_run_cleanup, payload.paper_id, job_id, payload.mode, payload.darkness)
 
     return CleanPaperResponse(
         paper_id=payload.paper_id,

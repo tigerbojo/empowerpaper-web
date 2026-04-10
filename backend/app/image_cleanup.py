@@ -189,15 +189,18 @@ def _rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
     return cv2.warpAffine(image, matrix, (width, height), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
 
 
-def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.ndarray) -> np.ndarray:
+def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.ndarray, darkness: float = 1.0) -> np.ndarray:
     """
-    v8: 智慧雙向強化 + 細小符號保護 + 對比拉伸（無疊影）
+    v9: 智慧雙向強化 + 細小符號保護 + 對比拉伸（無疊影）+ 可調黑度
 
-    - 印刷字區域：對比拉伸 + mild gamma → 又黑又銳利、無光暈
+    - 印刷字區域：對比拉伸 + gamma → 又黑又銳利、無光暈
     - 細小符號（√、(A)、分數線、括號）：從原始 binary 救回保護
-    - 非印刷區域：grayfilter 清除淡灰殘留 → 背景更乾淨
+    - 非印刷區域：grayfilter 清除淡灰殘留
+    - darkness: 0.5（較淡）~ 1.5（較深），預設 1.0
     """
     result = image.astype(np.float32)
+    # 黑度範圍 clamp
+    darkness = max(0.5, min(1.5, darkness))
 
     # 1. v3 留下的印刷字
     is_printed = binary < 128
@@ -238,12 +241,19 @@ def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.nd
         iterations=1,
     ) > 0
 
-    # 4. 印刷字加深：v9 加強版 - 更激進的對比拉伸 + 更強的 gamma
-    # 對比拉伸 [50, 180] → [0, 200]（更窄的輸入範圍 = 更高對比）
-    stretched = np.clip((result - 50) * 200.0 / 130.0, 0, 200)
-    # 更強的 gamma 0.7（從 0.85 → 0.7，暗的更暗）
+    # 4. 印刷字加深：對比拉伸 + gamma（受 darkness 參數控制）
+    # darkness=1.0 → 預設 v9 行為
+    # darkness>1.0 → 更深；darkness<1.0 → 較淡
+    # 對比拉伸的低點：darkness 越大，低點越高（讓暗的更暗）
+    low_point = 50 * darkness  # 1.0 → 50, 1.5 → 75, 0.5 → 25
+    high_point = 180 + (1.0 - darkness) * 30  # 1.0 → 180, 1.5 → 165, 0.5 → 195
+    stretched = np.clip((result - low_point) * 200.0 / max(high_point - low_point, 50), 0, 200)
+
+    # gamma：darkness 越大，gamma 越小，暗的更暗
+    gamma = 0.7 / darkness  # 1.0 → 0.7, 1.5 → 0.47, 0.5 → 1.4
+    gamma = max(0.4, min(1.5, gamma))
     normalized = stretched / 255.0
-    gamma_corrected = np.power(np.clip(normalized, 0, 1), 0.7) * 255.0
+    gamma_corrected = np.power(np.clip(normalized, 0, 1), gamma) * 255.0
 
     # 印刷字位置取較暗的版本
     darkened = np.where(result < 220, gamma_corrected, result)
@@ -267,39 +277,8 @@ def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.nd
     return np.clip(np.where(is_residue, 255, result_print), 0, 255).astype(np.uint8)
 
 
-def _post_process_residue(image: np.ndarray, binary: np.ndarray) -> np.ndarray:
-    """v10: 二次形態學殘影清除 — 移除微弱的淡灰殘留"""
-    result = image.copy()
-
-    is_printed = binary < 128
-    printed_dilated = cv2.dilate(
-        (is_printed * 255).astype(np.uint8),
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
-        iterations=1,
-    ) > 0
-
-    # 對非印刷區的淡灰像素做連通元件分析
-    non_printed = ~printed_dilated
-    light_gray = non_printed & (result > 180) & (result < 245)
-    light_gray_uint = (light_gray * 255).astype(np.uint8)
-
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-        light_gray_uint, connectivity=8
-    )
-
-    for label in range(1, num_labels):
-        area = stats[label, cv2.CC_STAT_AREA]
-        cw = stats[label, cv2.CC_STAT_WIDTH]
-        ch = stats[label, cv2.CC_STAT_HEIGHT]
-        # 小型淡灰殘影（面積 < 60、最大邊 < 15）
-        if area < 60 and max(cw, ch) < 15:
-            result[labels == label] = 255
-
-    return result
-
-
-def _build_soft_clean_image(gray: np.ndarray, binary: np.ndarray, original_binary: np.ndarray | None = None) -> np.ndarray:
-    """v10: 智慧雙向強化 + 細小符號保護 + 二次形態學殘影清除"""
+def _build_soft_clean_image(gray: np.ndarray, binary: np.ndarray, original_binary: np.ndarray | None = None, darkness: float = 1.0) -> np.ndarray:
+    """v9: 智慧雙向強化 + 細小符號保護 + 可調黑度"""
     white_lifted = cv2.normalize(gray, None, 40, 255, cv2.NORM_MINMAX)
     white_canvas = np.full_like(white_lifted, 255)
     base = cv2.addWeighted(white_lifted, 0.72, white_canvas, 0.28, 0)
@@ -307,8 +286,7 @@ def _build_soft_clean_image(gray: np.ndarray, binary: np.ndarray, original_binar
     if original_binary is None:
         original_binary = binary
 
-    enhanced = _smart_enhance(base, binary, original_binary)
-    return _post_process_residue(enhanced, binary)
+    return _smart_enhance(base, binary, original_binary, darkness)
 
 
 def _build_ocr_clean_image(gray: np.ndarray, binary: np.ndarray) -> np.ndarray:
@@ -344,7 +322,7 @@ def _write_png(output_path: Path, image: np.ndarray) -> Path:
     return output_path
 
 
-def cleanup_exam_image_opencv(input_path: Path, output_path: Path, ocr_output_path: Path | None = None) -> CleanupArtifacts:
+def cleanup_exam_image_opencv(input_path: Path, output_path: Path, ocr_output_path: Path | None = None, darkness: float = 1.0) -> CleanupArtifacts:
     image = _load_image(input_path)
     image = _resize_if_needed(image)
     image = _remove_colored_marks(image)
@@ -354,7 +332,7 @@ def cleanup_exam_image_opencv(input_path: Path, output_path: Path, ocr_output_pa
     original_binary = _binarize_document(enhanced)
     binary = _remove_gray_marks(enhanced, original_binary.copy())
 
-    output = _build_soft_clean_image(enhanced, binary, original_binary)
+    output = _build_soft_clean_image(enhanced, binary, original_binary, darkness)
     ocr_output = _build_ocr_clean_image(enhanced, binary)
 
     _write_png(output_path, output)
@@ -412,7 +390,7 @@ def cleanup_exam_image_unpaper(input_path: Path, output_path: Path, ocr_output_p
     return CleanupArtifacts(processor='unpaper', cleaned_path=output_path, ocr_path=final_ocr_path)
 
 
-def cleanup_exam_image(input_path: Path, output_path: Path, mode: CleanupMode = 'auto', ocr_output_path: Path | None = None) -> CleanupArtifacts:
+def cleanup_exam_image(input_path: Path, output_path: Path, mode: CleanupMode = 'auto', ocr_output_path: Path | None = None, darkness: float = 1.0) -> CleanupArtifacts:
     if mode == 'ai':
         from .ai_cleanup_erasenet import has_ai_cleanup, cleanup_exam_image_ai
         if not has_ai_cleanup():
@@ -429,4 +407,4 @@ def cleanup_exam_image(input_path: Path, output_path: Path, mode: CleanupMode = 
         except Exception:
             pass
 
-    return cleanup_exam_image_opencv(input_path, output_path, ocr_output_path)
+    return cleanup_exam_image_opencv(input_path, output_path, ocr_output_path, darkness)

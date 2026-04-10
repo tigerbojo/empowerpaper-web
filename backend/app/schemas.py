@@ -18,6 +18,7 @@ class CleanPaperRequest(BaseModel):
 
     paper_id: str = Field(alias='paperId')
     mode: CleanupMode = 'auto'
+    darkness: float = 1.0  # 0.5 ~ 1.5, 預設 1.0
 
     @model_validator(mode='before')
     @classmethod

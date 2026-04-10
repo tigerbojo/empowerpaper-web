@@ -7,6 +7,7 @@ const initialState = {
   selectedEditImage: null,
   selectedEditImageKind: 'cleaned',
   cleanupMode: 'opencv',
+  darkness: 1.0,
   cleanupProcessor: null,
   currentPaperId: null,
   currentJobId: null,
@@ -33,6 +34,7 @@ const usePaperStore = create((set) => ({
   setSelectedEditImage: (selectedEditImage, selectedEditImageKind = 'cleaned') =>
     set({ selectedEditImage, selectedEditImageKind }),
   setCleanupMode: (cleanupMode) => set({ cleanupMode }),
+  setDarkness: (darkness) => set({ darkness }),
   setCleanupProcessor: (cleanupProcessor) => set({ cleanupProcessor }),
   setCurrentPaperId: (currentPaperId) => set({ currentPaperId }),
   setCurrentJobId: (currentJobId) => set({ currentJobId }),

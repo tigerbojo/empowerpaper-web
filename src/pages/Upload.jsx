@@ -21,9 +21,12 @@ export default function Upload() {
   const navigate = useNavigate()
   const { file, error, previewUrl, compressed, isCompressing, onSelectFile } = useImageUpload()
   const [isProcessing, setIsProcessing] = useState(false)
+  const [isAdjusting, setIsAdjusting] = useState(false)
   const uploadProgress = usePaperStore((state) => state.uploadProgress)
   const uploadStage = usePaperStore((state) => state.uploadStage)
   const cleanupMode = usePaperStore((state) => state.cleanupMode)
+  const darkness = usePaperStore((state) => state.darkness)
+  const setDarkness = usePaperStore((state) => state.setDarkness)
   const cleanupProcessor = usePaperStore((state) => state.cleanupProcessor)
   const setUploadProgress = usePaperStore((state) => state.setUploadProgress)
   const setUploadStage = usePaperStore((state) => state.setUploadStage)
@@ -128,6 +131,7 @@ export default function Upload() {
         paperId: uploadResult.paperId,
         paper_id: uploadResult.paperId,
         mode: cleanupMode,
+        darkness,
       })
 
       const activeJobId = cleanResult.jobId || uploadResult.jobId
@@ -170,6 +174,47 @@ export default function Upload() {
     }
   }
 
+  // 用新 darkness 重新處理（不重新上傳，後端用同一張原圖）
+  const reprocessWithDarkness = async (newDarkness) => {
+    if (!currentPaperId || currentPaperId === 'mock-paper') return
+    setIsAdjusting(true)
+    try {
+      const cleanResult = await cleanMutation.mutateAsync({
+        paperId: currentPaperId,
+        paper_id: currentPaperId,
+        mode: cleanupMode,
+        darkness: newDarkness,
+      })
+
+      if (cleanResult.cleanedImageUrl) {
+        setCleanedImage(cleanResult.cleanedImageUrl)
+        setCleanedOcrImage(cleanResult.ocrImageUrl || cleanResult.cleanedImageUrl)
+        setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
+      } else if (cleanResult.jobId) {
+        const jobResult = await pollCleanJob(cleanResult.jobId)
+        if (jobResult.cleanedImageUrl) {
+          setCleanedImage(jobResult.cleanedImageUrl)
+          setCleanedOcrImage(jobResult.ocrImageUrl || jobResult.cleanedImageUrl)
+          setSelectedEditImage(jobResult.cleanedImageUrl, 'cleaned')
+        }
+      }
+    } catch (err) {
+      pushToast({ tone: 'warning', title: '調整失敗', description: err.message || '無法套用新的黑度設定' })
+    } finally {
+      setIsAdjusting(false)
+    }
+  }
+
+  // 滑桿 debounce：停止拖動 600ms 後才送請求
+  useEffect(() => {
+    if (!cleanedImage || !currentPaperId || currentPaperId === 'mock-paper') return
+    const timer = setTimeout(() => {
+      reprocessWithDarkness(darkness)
+    }, 600)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [darkness])
+
   const statusLabel = isCompressing
     ? '正在壓縮圖片…'
     : uploadStage === 'uploading'
@@ -182,8 +227,7 @@ export default function Upload() {
 
   const previewOptions = [
     { key: 'original', label: '使用原始圖片進入框選', image: previewUrl },
-    { key: 'cleaned', label: '使用閱讀版進入框選', image: cleanedImage },
-    { key: 'ocr', label: '使用 OCR 版進入框選', image: cleanedOcrImage },
+    { key: 'cleaned', label: '使用處理後進入框選', image: cleanedImage },
   ].filter((option) => Boolean(option.image))
 
   return (
@@ -259,20 +303,37 @@ export default function Upload() {
           </div>
 
           <div>
-            <div className="mb-2 text-sm font-medium text-slate-300">閱讀版預覽</div>
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-sm font-medium text-slate-300">處理後預覽</div>
+              {isAdjusting && <div className="text-xs text-cyan-300">套用新黑度中…</div>}
+            </div>
             {cleanedImage ? (
-              <img src={cleanedImage} alt="cleaned preview" className="max-h-[300px] w-full rounded-[22px] object-contain border border-white/10 bg-white" />
+              <img src={cleanedImage} alt="cleaned preview" className="max-h-[400px] w-full rounded-[22px] object-contain border border-white/10 bg-white" />
             ) : (
-              <div className="flex min-h-[220px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">完成去痕跡後，這裡會顯示保留閱讀體驗的清理版本。</div>
+              <div className="flex min-h-[300px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">完成處理後，這裡會顯示去除手寫、加深印刷字的乾淨版本。</div>
             )}
-          </div>
 
-          <div>
-            <div className="mb-2 text-sm font-medium text-slate-300">OCR 版預覽</div>
-            {cleanedOcrImage ? (
-              <img src={cleanedOcrImage} alt="ocr preview" className="max-h-[300px] w-full rounded-[22px] object-contain border border-white/10 bg-white" />
-            ) : (
-              <div className="flex min-h-[220px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">OCR 版會顯示較高對比的輸出，方便後續辨識與框選。</div>
+            {cleanedImage && (
+              <div className="mt-4 rounded-[18px] border border-white/10 bg-slate-950/40 p-4 space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-300">印刷字加深</span>
+                  <span className="text-cyan-300 font-mono text-xs">{darkness.toFixed(2)}x</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="1.5"
+                  step="0.05"
+                  value={darkness}
+                  onChange={(e) => setDarkness(parseFloat(e.target.value))}
+                  className="w-full accent-cyan-400"
+                />
+                <div className="flex justify-between text-[10px] text-slate-500">
+                  <span>較淡</span>
+                  <span>預設</span>
+                  <span>更深</span>
+                </div>
+              </div>
             )}
           </div>
         </div>
