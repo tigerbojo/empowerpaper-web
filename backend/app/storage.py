@@ -38,4 +38,9 @@ class LocalStorage:
         return f"{settings.public_base_url.rstrip('/')}/storage/{rel}"
 
 
-storage = LocalStorage()
+# 根據設定選擇 storage backend
+if settings.use_supabase:
+    from .supabase_storage import SupabaseStorage
+    storage = SupabaseStorage()
+else:
+    storage = LocalStorage()
