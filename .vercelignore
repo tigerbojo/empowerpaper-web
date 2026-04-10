@@ -1,0 +1,7 @@
+research/
+TrainData/
+backend/
+*.pth
+.venv/
+__pycache__/
+node_modules/
