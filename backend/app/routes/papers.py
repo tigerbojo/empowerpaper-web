@@ -1,6 +1,6 @@
 ﻿from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from ..image_cleanup import cleanup_exam_image
 from ..job_store import job_store
@@ -57,12 +57,20 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadPaperResponse:
 
 
 @router.post('/clean', response_model=CleanPaperResponse)
-async def clean_paper(payload: CleanPaperRequest, background_tasks: BackgroundTasks) -> CleanPaperResponse:
+async def clean_paper(payload: CleanPaperRequest) -> CleanPaperResponse:
+    """
+    同步處理（適用於 Cloud Run）：
+    - 不再用 BackgroundTasks（在 stateless container 上不可靠）
+    - 直接在 request 內跑完 cleanup，5-10 秒返回結果
+    - 前端的 polling 邏輯仍然可用：第一次就拿到 status='completed'
+    """
     if payload.paper_id not in papers_index:
         raise HTTPException(status_code=404, detail='找不到對應的 paperId')
 
     cleaned_path = _build_clean_path(payload.paper_id, payload.mode, payload.darkness)
     ocr_path = _build_ocr_path(payload.paper_id, payload.mode)
+
+    # 已存在直接返回
     if cleaned_path.exists():
         return CleanPaperResponse(
             paper_id=payload.paper_id,
@@ -74,19 +82,23 @@ async def clean_paper(payload: CleanPaperRequest, background_tasks: BackgroundTa
             requested_mode=payload.mode,
         )
 
-    job_id = storage.new_job_id()
-    job_store.create(payload.paper_id, job_id, payload.mode)
-    background_tasks.add_task(_run_cleanup, payload.paper_id, job_id, payload.mode, payload.darkness)
-
-    return CleanPaperResponse(
-        paper_id=payload.paper_id,
-        job_id=job_id,
-        status='processing',
-        cleaned_image_url=None,
-        ocr_image_url=None,
-        processor=None,
-        requested_mode=payload.mode,
-    )
+    # 同步處理
+    try:
+        original_path = papers_index[payload.paper_id]
+        artifacts = cleanup_exam_image(
+            original_path, cleaned_path, payload.mode, ocr_path, payload.darkness,
+        )
+        return CleanPaperResponse(
+            paper_id=payload.paper_id,
+            job_id='sync',
+            status='completed',
+            cleaned_image_url=storage.public_url(artifacts.cleaned_path),
+            ocr_image_url=storage.public_url(artifacts.ocr_path) if artifacts.ocr_path else None,
+            processor=artifacts.processor,
+            requested_mode=payload.mode,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'清理失敗：{exc}')
 
 
 @router.get('/jobs/{job_id}', response_model=CleanJobResult)
