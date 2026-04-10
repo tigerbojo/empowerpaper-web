@@ -6,7 +6,7 @@ const initialState = {
   cleanedOcrImage: null,
   selectedEditImage: null,
   selectedEditImageKind: 'cleaned',
-  cleanupMode: 'auto',
+  cleanupMode: 'opencv',
   cleanupProcessor: null,
   currentPaperId: null,
   currentJobId: null,

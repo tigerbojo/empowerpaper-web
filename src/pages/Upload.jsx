@@ -188,7 +188,7 @@ export default function Upload() {
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
-      <GlassCard title="上傳試卷" description="先在瀏覽器中壓縮圖片，再交給 FastAPI 與文件清理引擎進行去痕跡、拉平與後續分析。">
+      <GlassCard title="上傳試卷" description="上傳考卷照片，系統會自動去除手寫痕跡、加強印刷字、產出乾淨的複習卷。">
         <label className="flex min-h-[260px] cursor-pointer flex-col items-center justify-center rounded-[28px] border border-dashed border-cyan-200/25 bg-slate-950/35 px-6 text-center text-slate-300 transition hover:bg-slate-950/45">
           <input type="file" accept="image/*" className="hidden" onChange={(event) => onSelectFile(event.target.files?.[0])} />
           <div className="text-lg font-medium text-white">選擇要處理的試卷照片</div>
@@ -201,15 +201,6 @@ export default function Upload() {
           <div className="mt-4 space-y-3 rounded-[24px] border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
             <div>檔名：{file.name}</div>
             {meta.length > 0 && <div>{meta.join(' ｜ ')}</div>}
-            <label className="space-y-2 text-sm text-slate-300">
-              <span>去痕跡模式</span>
-              <select value={cleanupMode} onChange={(event) => setCleanupMode(event.target.value)} className="w-full rounded-2xl border border-line bg-slate-950/50 px-4 py-3 text-white outline-none" disabled={isProcessing}>
-                <option value="auto">自動（有 unpaper 就優先使用）</option>
-                <option value="opencv">OpenCV 清理</option>
-                <option value="unpaper">unpaper 清理</option>
-                <option value="ai">AI 深度清理（Beta）</option>
-              </select>
-            </label>
             {(isCompressing || isProcessing) && <Spinner label={statusLabel} />}
           </div>
         )}
@@ -222,7 +213,7 @@ export default function Upload() {
 
         {file && cleanedImage && (
           <div className="mt-4">
-            <NoticeBanner tone="success" title="預處理已完成" description={`目前 paper id：${currentPaperId || '尚未取得'}｜實際使用：${cleanupProcessor || cleanupMode}。現在可以決定框選頁要用哪一版影像。`} actions={<Button size="sm" onClick={() => navigate('/edit')}>前往框選頁</Button>} />
+            <NoticeBanner tone="success" title="預處理已完成" description="可以前往框選頁挑選錯題。" actions={<Button size="sm" onClick={() => navigate('/edit')}>前往框選頁</Button>} />
           </div>
         )}
 
@@ -247,13 +238,12 @@ export default function Upload() {
 
         {file && !cleanedImage && processingStatus !== 'idle' && (
           <div className="mt-4">
-            <NoticeBanner tone="warning" title="正在等待去痕跡結果" description={`目前階段：${uploadStage}｜job id：${currentJobId || '尚未建立'}｜請求模式：${cleanupMode}`} />
+            <NoticeBanner tone="warning" title="正在處理中…" description={`目前階段：${uploadStage}`} />
           </div>
         )}
 
         <div className="mt-5 flex flex-wrap gap-3">
           <Button disabled={!compressed || isCompressing || isProcessing} onClick={handleProcess}>開始處理</Button>
-          <Button variant="secondary" disabled={!compressed}>查看後端 API 合約</Button>
         </div>
       </GlassCard>
 

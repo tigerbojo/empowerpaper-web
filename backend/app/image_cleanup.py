@@ -77,52 +77,94 @@ def _binarize_document(gray: np.ndarray) -> np.ndarray:
     return cleaned
 
 
-def _remove_gray_marks(enhanced: np.ndarray, binary: np.ndarray) -> np.ndarray:
-    """v2: 多重條件投票制，比單一 threshold 更精準"""
-    text_inv = 255 - binary
-    dist = cv2.distanceTransform(text_inv, cv2.DIST_L2, 5)
+def _detect_text_grid(binary: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """雙向投影：偵測印刷文字的水平行 + 垂直列"""
+    h, w = binary.shape
+    text_inv = (255 - binary) / 255.0
 
+    h_proj = np.sum(text_inv, axis=1) / w
+    h_proj_smooth = cv2.GaussianBlur(
+        h_proj.astype(np.float32).reshape(-1, 1), (1, 21), 5
+    ).flatten()
+    h_in_line = (h_proj_smooth > 0.04).astype(np.uint8)
+
+    v_proj = np.sum(text_inv, axis=0) / h
+    v_proj_smooth = cv2.GaussianBlur(
+        v_proj.astype(np.float32).reshape(-1, 1), (1, 21), 5
+    ).flatten()
+    v_in_line = (v_proj_smooth > 0.04).astype(np.uint8)
+
+    return h_in_line, v_in_line
+
+
+def _remove_gray_marks(enhanced: np.ndarray, binary: np.ndarray) -> np.ndarray:
+    """
+    v3: 雙向投影行列偵測 + 局部密度 + 形狀特徵投票
+
+    核心策略：
+    - 印刷字會排在規律的水平行/垂直列上 → 兩個方向同時偏離 = 手寫
+    - 印刷字密集分布 → 周圍密度低 = 孤立筆跡 = 手寫
+    - 配合形狀特徵（密度、長寬比、面積）做投票
+    """
+    h_img, w_img = binary.shape
+
+    # 雙向投影
+    h_in_line, v_in_line = _detect_text_grid(binary)
+
+    # 局部密度地圖（大 kernel 平滑後的文字密度）
+    text_inv_norm = (255 - binary).astype(np.float32) / 255.0
+    density_map = cv2.GaussianBlur(text_inv_norm, (51, 51), 15)
+
+    text_inv = 255 - binary
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(text_inv, connectivity=8)
     cleaned = binary.copy()
 
     for label in range(1, num_labels):
-        mask = labels == label
-        stroke_widths = dist[mask]
-        if stroke_widths.size == 0:
-            continue
-
+        x = stats[label, cv2.CC_STAT_LEFT]
+        y = stats[label, cv2.CC_STAT_TOP]
+        cw = stats[label, cv2.CC_STAT_WIDTH]
+        ch = stats[label, cv2.CC_STAT_HEIGHT]
         area = stats[label, cv2.CC_STAT_AREA]
-        w = stats[label, cv2.CC_STAT_WIDTH]
-        h = max(stats[label, cv2.CC_STAT_HEIGHT], 1)
-        aspect = w / h
-        mean_sw = float(np.mean(stroke_widths))
-        std_sw = float(np.std(stroke_widths))
-        sw_var = std_sw / max(mean_sw, 0.1)
-        bbox_area = max(w * h, 1)
-        density = area / bbox_area
-        region_intensity = float(np.mean(enhanced[mask]))
 
         # 小雜點直接清除
         if area < 8:
-            cleaned[mask] = 255
+            cleaned[labels == label] = 255
             continue
 
-        # 多重條件投票
+        # 行列對齊度
+        ys = list(range(y, min(y + ch, h_img)))
+        xs = list(range(x, min(x + cw, w_img)))
+        h_ratio = float(np.mean(h_in_line[ys])) if ys else 0.0
+        v_ratio = float(np.mean(v_in_line[xs])) if xs else 0.0
+        is_off_grid = h_ratio < 0.5 and v_ratio < 0.5
+
+        # 局部密度（中心點周圍）
+        cy = y + ch // 2
+        cx = x + cw // 2
+        local_density = float(density_map[min(cy, h_img - 1), min(cx, w_img - 1)])
+        is_isolated = local_density < 0.05
+
+        # 形狀特徵
+        bbox_area = max(cw * ch, 1)
+        density = area / bbox_area
+        aspect = cw / max(ch, 1)
+
+        # 投票（偏離行列 + 孤立 = 強信號，各 2 票）
         votes = 0
-        if sw_var > 0.55:
+        if is_off_grid:
+            votes += 2
+        if is_isolated:
+            votes += 2
+        if density < 0.2:
             votes += 1
-        if area > 5000:
+        if aspect > 5 or aspect < 0.2:
             votes += 1
-        if aspect > 6 or aspect < 0.15:
-            votes += 1
-        if density < 0.25:
-            votes += 1
-        if region_intensity > 180:
+        if area > 4000:
             votes += 1
 
         # 至少 2 票才判定為手寫
         if votes >= 2:
-            cleaned[mask] = 255
+            cleaned[labels == label] = 255
 
     return cleaned
 
@@ -147,19 +189,126 @@ def _rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
     return cv2.warpAffine(image, matrix, (width, height), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
 
 
-def _build_soft_clean_image(gray: np.ndarray, binary: np.ndarray) -> np.ndarray:
-    """v2: 更白的背景 + 更銳利的文字"""
+def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.ndarray) -> np.ndarray:
+    """
+    v8: 智慧雙向強化 + 細小符號保護 + 對比拉伸（無疊影）
+
+    - 印刷字區域：對比拉伸 + mild gamma → 又黑又銳利、無光暈
+    - 細小符號（√、(A)、分數線、括號）：從原始 binary 救回保護
+    - 非印刷區域：grayfilter 清除淡灰殘留 → 背景更乾淨
+    """
+    result = image.astype(np.float32)
+
+    # 1. v3 留下的印刷字
+    is_printed = binary < 128
+
+    # 2. 救回細小符號 + 細長形（涵蓋括號、底線、上下標）
+    text_inv = 255 - original_binary
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(text_inv, connectivity=8)
+    rescued = np.zeros_like(original_binary, dtype=bool)
+    for label in range(1, num_labels):
+        cw = stats[label, cv2.CC_STAT_WIDTH]
+        ch = stats[label, cv2.CC_STAT_HEIGHT]
+        area = stats[label, cv2.CC_STAT_AREA]
+        bbox_area = max(cw * ch, 1)
+        density = area / bbox_area
+        aspect = cw / max(ch, 1)
+
+        # 細小且形狀規則
+        is_tiny_symbol = 8 < area < 250 and density > 0.25 and 0.2 < aspect < 5.0
+
+        # 細長形（括號、底線、分數線）
+        is_thin_shape = (
+            8 < area < 400
+            and (
+                (aspect > 0.15 and aspect < 0.5 and ch < 40)
+                or (aspect > 2.0 and aspect < 8.0 and cw < 60)
+            )
+        )
+
+        if is_tiny_symbol or is_thin_shape:
+            rescued |= (labels == label)
+
+    is_printed_strong = is_printed | rescued
+
+    # 3. 印刷字保護 mask（5x5 dilate）
+    printed_dilated = cv2.dilate(
+        (is_printed_strong * 255).astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    ) > 0
+
+    # 4. 印刷字加深：v9 加強版 - 更激進的對比拉伸 + 更強的 gamma
+    # 對比拉伸 [50, 180] → [0, 200]（更窄的輸入範圍 = 更高對比）
+    stretched = np.clip((result - 50) * 200.0 / 130.0, 0, 200)
+    # 更強的 gamma 0.7（從 0.85 → 0.7，暗的更暗）
+    normalized = stretched / 255.0
+    gamma_corrected = np.power(np.clip(normalized, 0, 1), 0.7) * 255.0
+
+    # 印刷字位置取較暗的版本
+    darkened = np.where(result < 220, gamma_corrected, result)
+
+    result_print = np.where(printed_dilated, darkened, result)
+
+    # 5. 非印刷區清淡灰
+    avg_5x5 = cv2.boxFilter(result_print, ddepth=-1, ksize=(5, 5))
+    min_5x5 = cv2.erode(
+        result_print.astype(np.uint8),
+        np.ones((5, 5), np.uint8),
+    ).astype(np.float32)
+
+    is_residue = (
+        ~printed_dilated
+        & (avg_5x5 > 210)
+        & (avg_5x5 < 248)
+        & (min_5x5 > 130)
+    )
+
+    return np.clip(np.where(is_residue, 255, result_print), 0, 255).astype(np.uint8)
+
+
+def _post_process_residue(image: np.ndarray, binary: np.ndarray) -> np.ndarray:
+    """v10: 二次形態學殘影清除 — 移除微弱的淡灰殘留"""
+    result = image.copy()
+
+    is_printed = binary < 128
+    printed_dilated = cv2.dilate(
+        (is_printed * 255).astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    ) > 0
+
+    # 對非印刷區的淡灰像素做連通元件分析
+    non_printed = ~printed_dilated
+    light_gray = non_printed & (result > 180) & (result < 245)
+    light_gray_uint = (light_gray * 255).astype(np.uint8)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        light_gray_uint, connectivity=8
+    )
+
+    for label in range(1, num_labels):
+        area = stats[label, cv2.CC_STAT_AREA]
+        cw = stats[label, cv2.CC_STAT_WIDTH]
+        ch = stats[label, cv2.CC_STAT_HEIGHT]
+        # 小型淡灰殘影（面積 < 60、最大邊 < 15）
+        if area < 60 and max(cw, ch) < 15:
+            result[labels == label] = 255
+
+    return result
+
+
+def _build_soft_clean_image(gray: np.ndarray, binary: np.ndarray, original_binary: np.ndarray | None = None) -> np.ndarray:
+    """v10: 智慧雙向強化 + 細小符號保護 + 二次形態學殘影清除"""
     white_lifted = cv2.normalize(gray, None, 40, 255, cv2.NORM_MINMAX)
     white_canvas = np.full_like(white_lifted, 255)
-    softened = cv2.addWeighted(white_lifted, 0.72, white_canvas, 0.28, 0)
+    base = cv2.addWeighted(white_lifted, 0.72, white_canvas, 0.28, 0)
 
-    text_mask = cv2.bitwise_not(binary)
-    text_mask = cv2.dilate(text_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)), iterations=1)
+    if original_binary is None:
+        original_binary = binary
 
-    preserved_text = cv2.addWeighted(white_lifted, 1.35, cv2.GaussianBlur(white_lifted, (0, 0), 1.0), -0.35, 0)
-    output = softened.copy()
-    output[text_mask > 0] = preserved_text[text_mask > 0]
-    return cv2.normalize(output, None, 5, 255, cv2.NORM_MINMAX)
+    enhanced = _smart_enhance(base, binary, original_binary)
+    return _post_process_residue(enhanced, binary)
 
 
 def _build_ocr_clean_image(gray: np.ndarray, binary: np.ndarray) -> np.ndarray:
@@ -202,10 +351,10 @@ def cleanup_exam_image_opencv(input_path: Path, output_path: Path, ocr_output_pa
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     enhanced = _normalize_document_background(gray)
-    binary = _binarize_document(enhanced)
-    binary = _remove_gray_marks(enhanced, binary)
+    original_binary = _binarize_document(enhanced)
+    binary = _remove_gray_marks(enhanced, original_binary.copy())
 
-    output = _build_soft_clean_image(enhanced, binary)
+    output = _build_soft_clean_image(enhanced, binary, original_binary)
     ocr_output = _build_ocr_clean_image(enhanced, binary)
 
     _write_png(output_path, output)
