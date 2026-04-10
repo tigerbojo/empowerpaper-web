@@ -12,12 +12,28 @@ router = APIRouter(prefix='/papers', tags=['papers'])
 papers_index: dict[str, Path] = {}
 
 
-def _run_cleanup(paper_id: str, job_id: str) -> None:
+def _build_clean_path(paper_id: str, mode: str) -> Path:
+    suffix = 'cleaned' if mode == 'auto' else f'cleaned-{mode}'
+    return storage.cleaned / f'{paper_id}-{suffix}.png'
+
+
+def _build_ocr_path(paper_id: str, mode: str) -> Path:
+    suffix = 'ocr' if mode == 'auto' else f'ocr-{mode}'
+    return storage.cleaned / f'{paper_id}-{suffix}.png'
+
+
+def _run_cleanup(paper_id: str, job_id: str, requested_mode: str) -> None:
     try:
         original_path = papers_index[paper_id]
-        cleaned_path = storage.build_cleaned_path(paper_id)
-        cleanup_exam_image(original_path, cleaned_path)
-        job_store.complete(job_id, storage.public_url(cleaned_path))
+        cleaned_path = _build_clean_path(paper_id, requested_mode)
+        ocr_path = _build_ocr_path(paper_id, requested_mode)
+        artifacts = cleanup_exam_image(original_path, cleaned_path, requested_mode, ocr_path)
+        job_store.complete(
+            job_id,
+            storage.public_url(artifacts.cleaned_path),
+            storage.public_url(artifacts.ocr_path) if artifacts.ocr_path else None,
+            artifacts.processor,
+        )
     except Exception as exc:
         job_store.fail(job_id, str(exc))
 
@@ -43,24 +59,31 @@ async def clean_paper(payload: CleanPaperRequest, background_tasks: BackgroundTa
     if payload.paper_id not in papers_index:
         raise HTTPException(status_code=404, detail='找不到對應的 paperId')
 
-    cleaned_path = storage.build_cleaned_path(payload.paper_id)
+    cleaned_path = _build_clean_path(payload.paper_id, payload.mode)
+    ocr_path = _build_ocr_path(payload.paper_id, payload.mode)
     if cleaned_path.exists():
         return CleanPaperResponse(
             paper_id=payload.paper_id,
             job_id='existing',
             status='completed',
             cleaned_image_url=storage.public_url(cleaned_path),
+            ocr_image_url=storage.public_url(ocr_path) if ocr_path.exists() else None,
+            processor='unpaper' if 'unpaper' in cleaned_path.name else 'opencv',
+            requested_mode=payload.mode,
         )
 
     job_id = storage.new_job_id()
-    job_store.create(payload.paper_id, job_id)
-    background_tasks.add_task(_run_cleanup, payload.paper_id, job_id)
+    job_store.create(payload.paper_id, job_id, payload.mode)
+    background_tasks.add_task(_run_cleanup, payload.paper_id, job_id, payload.mode)
 
     return CleanPaperResponse(
         paper_id=payload.paper_id,
         job_id=job_id,
         status='processing',
         cleaned_image_url=None,
+        ocr_image_url=None,
+        processor=None,
+        requested_mode=payload.mode,
     )
 
 
@@ -75,5 +98,8 @@ async def get_job(job_id: str) -> CleanJobResult:
         job_id=state.job_id,
         status=state.status,
         cleaned_image_url=state.cleaned_image_url,
+        ocr_image_url=state.ocr_image_url,
         error=state.error,
+        processor=state.processor,
+        requested_mode=state.requested_mode,
     )

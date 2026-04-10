@@ -7,111 +7,111 @@ Font.register({
 
 const styles = StyleSheet.create({
   page: {
-    paddingTop: 28,
-    paddingHorizontal: 28,
-    paddingBottom: 36,
+    paddingTop: 24,
+    paddingHorizontal: 24,
+    paddingBottom: 30,
     backgroundColor: '#ffffff',
     color: '#0f172a',
-    fontSize: 11,
+    fontSize: 10,
     fontFamily: 'NotoSansTC',
   },
   header: {
-    marginBottom: 18,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#cbd5e1',
+    marginBottom: 14,
+    paddingBottom: 10,
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#1e293b',
   },
   paperSize: {
-    fontSize: 9,
+    fontSize: 8,
     color: '#64748b',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
+    letterSpacing: 1,
   },
   title: {
-    marginTop: 6,
-    fontSize: 22,
+    marginTop: 4,
+    fontSize: 18,
     fontWeight: 700,
   },
   meta: {
-    marginTop: 4,
-    fontSize: 10,
+    marginTop: 3,
+    fontSize: 9,
     color: '#64748b',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
   },
   item: {
-    marginBottom: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#dbe4f0',
-    borderRadius: 14,
-    backgroundColor: '#ffffff',
+    marginBottom: 8,
+    paddingBottom: 6,
+    borderBottomWidth: 0.5,
+    borderBottomColor: '#e2e8f0',
   },
   itemHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 10,
-    marginBottom: 10,
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
   },
   itemTitle: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: 700,
   },
   itemMeta: {
-    fontSize: 9,
+    fontSize: 8,
     color: '#94a3b8',
-    marginTop: 3,
   },
   tags: {
-    marginTop: 4,
-    fontSize: 10,
-    color: '#64748b',
+    fontSize: 8,
+    color: '#94a3b8',
+    marginBottom: 4,
   },
   imageFrame: {
     width: '100%',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 12,
-    padding: 8,
-    backgroundColor: '#f8fafc',
   },
   image: {
     width: '100%',
     objectFit: 'contain',
-    borderRadius: 8,
   },
   fallbackImage: {
     width: '100%',
-    height: 120,
-    borderRadius: 10,
-    backgroundColor: '#e2e8f0',
+    height: 80,
+    backgroundColor: '#f1f5f9',
     alignItems: 'center',
     justifyContent: 'center',
   },
   fallbackImageText: {
-    fontSize: 9,
-    color: '#64748b',
+    fontSize: 8,
+    color: '#94a3b8',
+  },
+  footer: {
+    position: 'absolute',
+    bottom: 12,
+    left: 0,
+    right: 0,
+    textAlign: 'center',
+    fontSize: 8,
+    color: '#94a3b8',
   },
 })
 
 function getImageHeight(item) {
   const width = Number(item?.width) || 0
   const height = Number(item?.height) || 0
-  if (!width || !height) return 220
+  if (!width || !height) return 160
 
-  const contentWidth = 515
+  const contentWidth = 545
   const ratio = height / width
   const computed = Math.round(contentWidth * ratio)
-  return Math.max(120, Math.min(360, computed))
+  return Math.max(80, Math.min(280, computed))
 }
 
 function chunkItems(items = []) {
   const pages = []
   let current = []
   let usedHeight = 0
+  const pageHeight = 750
 
   items.forEach((item) => {
-    const estimated = getImageHeight(item) + 88
-    if (current.length > 0 && usedHeight + estimated > 690) {
+    const estimated = getImageHeight(item) + 40
+    if (current.length > 0 && usedHeight + estimated > pageHeight) {
       pages.push(current)
       current = [item]
       usedHeight = estimated
@@ -128,43 +128,48 @@ function chunkItems(items = []) {
 
 export default function ExamPdfDocument({ title, paperSize, items }) {
   const pages = chunkItems(items)
+  let globalIndex = 0
 
   return (
     <Document>
-      {pages.map((pageItems, pageIndex) => (
-        <Page key={`page-${pageIndex + 1}`} size="A4" style={styles.page}>
-          <View style={styles.header}>
-            <Text style={styles.paperSize}>{paperSize}</Text>
-            <Text style={styles.title}>{title}</Text>
-            <Text style={styles.meta}>共 {items.length} 題｜第 {pageIndex + 1} 頁</Text>
-          </View>
-
-          {pageItems.map((item, index) => (
-            <View key={item.id || `pdf-item-${pageIndex + 1}-${index + 1}`} style={styles.item} wrap={false}>
-              <View style={styles.itemHeader}>
-                <View>
-                  <Text style={styles.itemTitle}>{item.title || `題目 ${index + 1}`}</Text>
-                  <Text style={styles.itemMeta}>尺寸：{item.width || '?'} × {item.height || '?'}</Text>
+      {pages.map((pageItems, pageIndex) => {
+        return (
+          <Page key={`page-${pageIndex + 1}`} size="A4" style={styles.page}>
+            {pageIndex === 0 && (
+              <View style={styles.header}>
+                <Text style={styles.title}>{title}</Text>
+                <View style={styles.meta}>
+                  <Text>共 {items.length} 題</Text>
+                  <Text>姓名：＿＿＿＿＿  座號：＿＿  得分：＿＿</Text>
                 </View>
               </View>
+            )}
 
-              <Text style={styles.tags}>
-                標籤：{item.tags?.length ? item.tags.join('｜') : '尚未取得 AI 標籤'}
-              </Text>
-
-              <View style={styles.imageFrame}>
-                {item.pdfImageSrc ? (
-                  <Image src={item.pdfImageSrc} style={[styles.image, { height: getImageHeight(item) }]} />
-                ) : (
-                  <View style={styles.fallbackImage}>
-                    <Text style={styles.fallbackImageText}>No Image</Text>
+            {pageItems.map((item) => {
+              globalIndex += 1
+              return (
+                <View key={item.id || `pdf-item-${globalIndex}`} style={styles.item} wrap={false}>
+                  <View style={styles.itemHeader}>
+                    <Text style={styles.itemTitle}>{globalIndex}.</Text>
                   </View>
-                )}
-              </View>
-            </View>
-          ))}
-        </Page>
-      ))}
+
+                  <View style={styles.imageFrame}>
+                    {item.pdfImageSrc ? (
+                      <Image src={item.pdfImageSrc} style={[styles.image, { height: getImageHeight(item) }]} />
+                    ) : (
+                      <View style={styles.fallbackImage}>
+                        <Text style={styles.fallbackImageText}>圖片載入失敗</Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              )
+            })}
+
+            <Text style={styles.footer}>第 {pageIndex + 1} / {pages.length} 頁</Text>
+          </Page>
+        )
+      })}
     </Document>
   )
 }

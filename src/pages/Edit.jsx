@@ -7,9 +7,15 @@ import usePaperStore from '@/store/usePaperStore'
 
 export default function Edit() {
   const navigate = useNavigate()
-  const cleanedImage = usePaperStore((state) => state.cleanedImage)
+  const selectedEditImage = usePaperStore((state) => state.selectedEditImage)
+  const selectedEditImageKind = usePaperStore((state) => state.selectedEditImageKind)
   const currentPaperId = usePaperStore((state) => state.currentPaperId)
   const crops = usePaperStore((state) => state.crops)
+  const sourceLabel = selectedEditImageKind === 'original'
+    ? '原始圖片'
+    : selectedEditImageKind === 'ocr'
+      ? 'OCR 版'
+      : '閱讀版'
 
   return (
     <div className="space-y-5">
@@ -18,7 +24,7 @@ export default function Edit() {
         description="先手動框選題目區塊，之後會將裁切影像送往 OCR 與 AI 做分類、標籤與題庫整理。"
       />
 
-      {!cleanedImage && (
+      {!selectedEditImage && (
         <NoticeBanner
           tone="warning"
           title="尚未取得可用的 clean image"
@@ -27,13 +33,13 @@ export default function Edit() {
         />
       )}
 
-      {cleanedImage && (
+      {selectedEditImage && (
         <NoticeBanner
           tone={currentPaperId ? 'success' : 'info'}
-          title={currentPaperId ? '已連結後端 paper id' : '目前使用本地模式'}
+          title={currentPaperId ? `已連結後端 paper id｜目前使用${sourceLabel}` : `目前使用本地模式｜${sourceLabel}`}
           description={
             currentPaperId
-              ? `目前 paper id：${currentPaperId}，新增裁切時會優先送往後端取得標籤。`
+              ? `目前 paper id：${currentPaperId}，新增裁切時會優先送往後端取得標籤。若這張圖不適合框選，可以回上傳頁切換版本。`
               : `目前已建立 ${crops.length} 題裁切，但還沒連到正式 paper id。`
           }
           actions={crops.length > 0 ? <Button size="sm" onClick={() => navigate('/generate')}>前往組卷頁</Button> : null}

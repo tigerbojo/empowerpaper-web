@@ -23,24 +23,33 @@ export default function Upload() {
   const [isProcessing, setIsProcessing] = useState(false)
   const uploadProgress = usePaperStore((state) => state.uploadProgress)
   const uploadStage = usePaperStore((state) => state.uploadStage)
+  const cleanupMode = usePaperStore((state) => state.cleanupMode)
+  const cleanupProcessor = usePaperStore((state) => state.cleanupProcessor)
   const setUploadProgress = usePaperStore((state) => state.setUploadProgress)
   const setUploadStage = usePaperStore((state) => state.setUploadStage)
   const setProcessingStatus = usePaperStore((state) => state.setProcessingStatus)
   const setOriginalImage = usePaperStore((state) => state.setOriginalImage)
   const setCleanedImage = usePaperStore((state) => state.setCleanedImage)
+  const setCleanedOcrImage = usePaperStore((state) => state.setCleanedOcrImage)
+  const setSelectedEditImage = usePaperStore((state) => state.setSelectedEditImage)
+  const setCleanupMode = usePaperStore((state) => state.setCleanupMode)
+  const setCleanupProcessor = usePaperStore((state) => state.setCleanupProcessor)
   const setCurrentPaperId = usePaperStore((state) => state.setCurrentPaperId)
   const setCurrentJobId = usePaperStore((state) => state.setCurrentJobId)
   const currentPaperId = usePaperStore((state) => state.currentPaperId)
   const currentJobId = usePaperStore((state) => state.currentJobId)
   const processingStatus = usePaperStore((state) => state.processingStatus)
   const cleanedImage = usePaperStore((state) => state.cleanedImage)
+  const cleanedOcrImage = usePaperStore((state) => state.cleanedOcrImage)
+  const selectedEditImageKind = usePaperStore((state) => state.selectedEditImageKind)
   const pushToast = useUiStore((state) => state.pushToast)
   const { uploadMutation, cleanMutation, pollCleanJob } = usePaperProcess()
 
   useEffect(() => {
     if (!previewUrl) return
     setOriginalImage(previewUrl)
-  }, [previewUrl, setOriginalImage])
+    setSelectedEditImage(previewUrl, 'original')
+  }, [previewUrl, setOriginalImage, setSelectedEditImage])
 
   const meta = useMemo(() => {
     if (!compressed) return []
@@ -63,6 +72,9 @@ export default function Upload() {
       setUploadProgress(checkpoint)
     }
     setCleanedImage(previewUrl)
+    setCleanedOcrImage(previewUrl)
+    setSelectedEditImage(previewUrl, 'original')
+    setCleanupProcessor('opencv')
     setProcessingStatus('completed')
     setUploadStage('completed')
     setCurrentPaperId('mock-paper')
@@ -77,6 +89,9 @@ export default function Upload() {
     setProcessingStatus('uploading')
     setUploadStage('uploading')
     setUploadProgress(0)
+    setCleanupProcessor(null)
+    setCleanedImage(null)
+    setCleanedOcrImage(null)
 
     try {
       const uploadResult = await uploadMutation.mutateAsync({
@@ -89,24 +104,18 @@ export default function Upload() {
         },
       })
 
-      if (uploadResult.paperId) {
-        setCurrentPaperId(uploadResult.paperId)
-      }
-
-      if (uploadResult.originalImageUrl) {
-        setOriginalImage(uploadResult.originalImageUrl)
-      }
+      if (uploadResult.paperId) setCurrentPaperId(uploadResult.paperId)
+      if (uploadResult.originalImageUrl) setOriginalImage(uploadResult.originalImageUrl)
 
       if (uploadResult.cleanedImageUrl) {
         setCleanedImage(uploadResult.cleanedImageUrl)
+        setCleanedOcrImage(uploadResult.ocrImageUrl || uploadResult.cleanedImageUrl)
+        setSelectedEditImage(uploadResult.cleanedImageUrl, 'cleaned')
+        setCleanupProcessor(uploadResult.processor || 'opencv')
         setUploadProgress(100)
         setProcessingStatus('completed')
         setUploadStage('completed')
-        pushToast({
-          tone: 'success',
-          title: '預處理完成',
-          description: '後端已直接回傳 clean image，現在可以前往框選頁。',
-        })
+        pushToast({ tone: 'success', title: '預處理完成', description: `後端已直接回傳雙預覽（模式：${uploadResult.processor || cleanupMode}）。` })
         setIsProcessing(false)
         return
       }
@@ -118,25 +127,21 @@ export default function Upload() {
       const cleanResult = await cleanMutation.mutateAsync({
         paperId: uploadResult.paperId,
         paper_id: uploadResult.paperId,
-        jobId: uploadResult.jobId,
-        job_id: uploadResult.jobId,
+        mode: cleanupMode,
       })
 
       const activeJobId = cleanResult.jobId || uploadResult.jobId
-      if (activeJobId) {
-        setCurrentJobId(activeJobId)
-      }
+      if (activeJobId) setCurrentJobId(activeJobId)
 
       if (cleanResult.cleanedImageUrl) {
         setCleanedImage(cleanResult.cleanedImageUrl)
+        setCleanedOcrImage(cleanResult.ocrImageUrl || cleanResult.cleanedImageUrl)
+        setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
+        setCleanupProcessor(cleanResult.processor || 'opencv')
         setUploadProgress(100)
         setProcessingStatus('completed')
         setUploadStage('completed')
-        pushToast({
-          tone: 'success',
-          title: '預處理完成',
-          description: '後端已完成清理並回傳 clean image。',
-        })
+        pushToast({ tone: 'success', title: '預處理完成', description: `後端已完成清理並回傳雙預覽（模式：${cleanResult.processor || cleanupMode}）。` })
         setIsProcessing(false)
         return
       }
@@ -145,31 +150,22 @@ export default function Upload() {
         setUploadStage('polling')
         setUploadProgress(72)
         const jobResult = await pollCleanJob(activeJobId)
-        if (jobResult.paperId) {
-          setCurrentPaperId(jobResult.paperId)
-        }
-        if (jobResult.cleanedImageUrl) {
-          setCleanedImage(jobResult.cleanedImageUrl)
-        }
+        if (jobResult.paperId) setCurrentPaperId(jobResult.paperId)
+        if (jobResult.cleanedImageUrl) setCleanedImage(jobResult.cleanedImageUrl)
+        if (jobResult.ocrImageUrl || jobResult.cleanedImageUrl) setCleanedOcrImage(jobResult.ocrImageUrl || jobResult.cleanedImageUrl)
+        if (jobResult.cleanedImageUrl) setSelectedEditImage(jobResult.cleanedImageUrl, 'cleaned')
+        setCleanupProcessor(jobResult.processor || 'opencv')
         setUploadProgress(100)
         setProcessingStatus('completed')
         setUploadStage('completed')
-        pushToast({
-          tone: 'success',
-          title: '輪詢成功',
-          description: 'Cloud Run / FastAPI 已完成去筆跡任務。',
-        })
+        pushToast({ tone: 'success', title: '輪詢成功', description: `FastAPI 已完成去痕跡任務（模式：${jobResult.processor || cleanupMode}）。` })
         setIsProcessing(false)
         return
       }
 
       throw new Error('後端尚未回傳 clean image 或 job id')
     } catch (caughtError) {
-      pushToast({
-        tone: 'warning',
-        title: '後端暫時無法完成處理',
-        description: caughtError.message || '先切回本地 fallback，避免整個流程卡住。',
-      })
+      pushToast({ tone: 'warning', title: '後端暫時無法完成處理', description: caughtError.message || '先切回本地 fallback，避免整個流程卡住。' })
       await simulateProcessing()
     }
   }
@@ -182,11 +178,17 @@ export default function Upload() {
         ? '後端正在建立去痕跡任務…'
         : uploadStage === 'polling'
           ? '正在等待 Cloud Run / FastAPI 回傳結果…'
-          : `正在整理流程 (${formatPercent(uploadProgress)})`
+      : `正在整理流程 (${formatPercent(uploadProgress)})`
+
+  const previewOptions = [
+    { key: 'original', label: '使用原始圖片進入框選', image: previewUrl },
+    { key: 'cleaned', label: '使用閱讀版進入框選', image: cleanedImage },
+    { key: 'ocr', label: '使用 OCR 版進入框選', image: cleanedOcrImage },
+  ].filter((option) => Boolean(option.image))
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
-      <GlassCard title="上傳試卷" description="先在瀏覽器中壓縮圖片，再交給 FastAPI 與 OpenCV 進行去痕跡、拉平與後續分析。">
+      <GlassCard title="上傳試卷" description="先在瀏覽器中壓縮圖片，再交給 FastAPI 與文件清理引擎進行去痕跡、拉平與後續分析。">
         <label className="flex min-h-[260px] cursor-pointer flex-col items-center justify-center rounded-[28px] border border-dashed border-cyan-200/25 bg-slate-950/35 px-6 text-center text-slate-300 transition hover:bg-slate-950/45">
           <input type="file" accept="image/*" className="hidden" onChange={(event) => onSelectFile(event.target.files?.[0])} />
           <div className="text-lg font-medium text-white">選擇要處理的試卷照片</div>
@@ -196,62 +198,93 @@ export default function Upload() {
         {error && <p className="mt-3 text-sm text-rose-300">{error}</p>}
 
         {file && !error && (
-          <div className="mt-4 space-y-2 rounded-[24px] border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
+          <div className="mt-4 space-y-3 rounded-[24px] border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
             <div>檔名：{file.name}</div>
             {meta.length > 0 && <div>{meta.join(' ｜ ')}</div>}
+            <label className="space-y-2 text-sm text-slate-300">
+              <span>去痕跡模式</span>
+              <select value={cleanupMode} onChange={(event) => setCleanupMode(event.target.value)} className="w-full rounded-2xl border border-line bg-slate-950/50 px-4 py-3 text-white outline-none" disabled={isProcessing}>
+                <option value="auto">自動（有 unpaper 就優先使用）</option>
+                <option value="opencv">OpenCV 清理</option>
+                <option value="unpaper">unpaper 清理</option>
+                <option value="ai">AI 深度清理（Beta）</option>
+              </select>
+            </label>
             {(isCompressing || isProcessing) && <Spinner label={statusLabel} />}
           </div>
         )}
 
         {!file && (
           <div className="mt-4">
-            <NoticeBanner
-              title="尚未選擇試卷照片"
-              description="先上傳一張清楚的考卷圖片，系統才會開始壓縮與預處理。"
-            />
+            <NoticeBanner title="尚未選擇試卷照片" description="先上傳一張清楚的考卷圖片，系統才會開始壓縮與預處理。" />
           </div>
         )}
 
         {file && cleanedImage && (
           <div className="mt-4">
-            <NoticeBanner
-              tone="success"
-              title="預處理已完成"
-              description={`目前 paper id：${currentPaperId || '尚未取得'}，你可以前往框選頁開始整理題目。`}
-              actions={<Button size="sm" onClick={() => navigate('/edit')}>前往框選頁</Button>}
-            />
+            <NoticeBanner tone="success" title="預處理已完成" description={`目前 paper id：${currentPaperId || '尚未取得'}｜實際使用：${cleanupProcessor || cleanupMode}。現在可以決定框選頁要用哪一版影像。`} actions={<Button size="sm" onClick={() => navigate('/edit')}>前往框選頁</Button>} />
+          </div>
+        )}
+
+        {previewOptions.length > 0 && (
+          <div className="mt-4 rounded-[24px] border border-white/10 bg-white/5 p-4">
+            <div className="text-sm font-medium text-white">框選頁影像來源</div>
+            <div className="mt-2 text-sm text-slate-400">先選定你要帶進框選頁的版本。原圖通常最穩，閱讀版適合人眼，OCR 版則偏向辨識用途。</div>
+            <div className="mt-4 flex flex-wrap gap-3">
+              {previewOptions.map((option) => (
+                <Button
+                  key={option.key}
+                  size="sm"
+                  variant={selectedEditImageKind === option.key ? 'primary' : 'secondary'}
+                  onClick={() => setSelectedEditImage(option.image, option.key)}
+                >
+                  {option.label}
+                </Button>
+              ))}
+            </div>
           </div>
         )}
 
         {file && !cleanedImage && processingStatus !== 'idle' && (
           <div className="mt-4">
-            <NoticeBanner
-              tone="warning"
-              title="正在等待去痕跡結果"
-              description={`目前階段：${uploadStage}｜job id：${currentJobId || '尚未建立'}。若等待過久，可稍後重新整理再試。`}
-            />
+            <NoticeBanner tone="warning" title="正在等待去痕跡結果" description={`目前階段：${uploadStage}｜job id：${currentJobId || '尚未建立'}｜請求模式：${cleanupMode}`} />
           </div>
         )}
 
         <div className="mt-5 flex flex-wrap gap-3">
-          <Button disabled={!compressed || isCompressing || isProcessing} onClick={handleProcess}>
-            開始處理
-          </Button>
-          <Button variant="secondary" disabled={!compressed}>
-            查看後端 API 合約
-          </Button>
+          <Button disabled={!compressed || isCompressing || isProcessing} onClick={handleProcess}>開始處理</Button>
+          <Button variant="secondary" disabled={!compressed}>查看後端 API 合約</Button>
         </div>
       </GlassCard>
 
       <ScanFrame>
-        <div className="rounded-[24px] bg-slate-950/30 p-4">
-          {previewUrl ? (
-            <img src={previewUrl} alt="preview" className="max-h-[620px] w-full rounded-[22px] object-contain" />
-          ) : (
-            <div className="flex min-h-[620px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">
-              上傳完成後，右側會顯示原始圖片預覽，方便你確認角度、亮度與內容是否正確。
-            </div>
-          )}
+        <div className="rounded-[24px] bg-slate-950/30 p-4 space-y-4">
+          <div>
+            <div className="mb-2 text-sm font-medium text-slate-300">原始圖片</div>
+            {previewUrl ? (
+              <img src={previewUrl} alt="original preview" className="max-h-[300px] w-full rounded-[22px] object-contain" />
+            ) : (
+              <div className="flex min-h-[220px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">上傳完成後，這裡會顯示原始圖片預覽。</div>
+            )}
+          </div>
+
+          <div>
+            <div className="mb-2 text-sm font-medium text-slate-300">閱讀版預覽</div>
+            {cleanedImage ? (
+              <img src={cleanedImage} alt="cleaned preview" className="max-h-[300px] w-full rounded-[22px] object-contain border border-white/10 bg-white" />
+            ) : (
+              <div className="flex min-h-[220px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">完成去痕跡後，這裡會顯示保留閱讀體驗的清理版本。</div>
+            )}
+          </div>
+
+          <div>
+            <div className="mb-2 text-sm font-medium text-slate-300">OCR 版預覽</div>
+            {cleanedOcrImage ? (
+              <img src={cleanedOcrImage} alt="ocr preview" className="max-h-[300px] w-full rounded-[22px] object-contain border border-white/10 bg-white" />
+            ) : (
+              <div className="flex min-h-[220px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">OCR 版會顯示較高對比的輸出，方便後續辨識與框選。</div>
+            )}
+          </div>
         </div>
       </ScanFrame>
     </div>

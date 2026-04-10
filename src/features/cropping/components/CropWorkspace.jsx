@@ -1,4 +1,5 @@
 ﻿import { useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Cropper from 'react-cropper'
 import 'cropperjs/dist/cropper.css'
 import GlassCard from '@/components/ui/GlassCard'
@@ -18,8 +19,10 @@ function buildFallbackTags(index) {
 }
 
 export default function CropWorkspace() {
+  const navigate = useNavigate()
   const cropperRef = useRef(null)
-  const cleanedImage = usePaperStore((state) => state.cleanedImage)
+  const selectedEditImage = usePaperStore((state) => state.selectedEditImage)
+  const selectedEditImageKind = usePaperStore((state) => state.selectedEditImageKind)
   const currentPaperId = usePaperStore((state) => state.currentPaperId)
   const crops = usePaperStore((state) => state.crops)
   const addCrop = usePaperStore((state) => state.addCrop)
@@ -27,9 +30,15 @@ export default function CropWorkspace() {
   const removeCrop = usePaperStore((state) => state.removeCrop)
   const pushToast = useUiStore((state) => state.pushToast)
   const [isSaving, setIsSaving] = useState(false)
+  const [autoCropMode, setAutoCropMode] = useState(false)
   const { saveCropWithSuggestions } = useCropActions()
 
-  const canCrop = Boolean(cleanedImage)
+  const canCrop = Boolean(selectedEditImage)
+  const sourceLabel = selectedEditImageKind === 'original'
+    ? '原始圖片'
+    : selectedEditImageKind === 'ocr'
+      ? 'OCR 版'
+      : '閱讀版'
   const summary = useMemo(
     () => crops.map((crop, index) => ({ ...crop, suggestionTags: crop.tags?.length ? crop.tags : buildFallbackTags(index) })),
     [crops],
@@ -105,26 +114,40 @@ export default function CropWorkspace() {
       description="當你確認裁切框位置後，可以將區塊存成 Blob，後續再送到後端做文字辨識與 AI 標籤建議。"
       actions={
         <>
-          <Button variant="secondary" disabled={!canCrop}>AI 標籤建議</Button>
-          <Button disabled={!canCrop || isSaving} onClick={captureCrop}>{isSaving ? '儲存中…' : '加入裁切清單'}</Button>
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoCropMode}
+              onChange={(e) => setAutoCropMode(e.target.checked)}
+              className="accent-cyan-400"
+            />
+            連續框選
+          </label>
+          <Button variant="secondary" size="sm" disabled={crops.length === 0} onClick={() => { if (confirm('確定清空全部裁切？')) usePaperStore.getState().setCrops([]) }}>清空全部</Button>
+          <Button disabled={!canCrop || isSaving} onClick={captureCrop}>{isSaving ? '儲存中…' : `加入裁切 (${crops.length})`}</Button>
         </>
       }
     >
       <div className="grid gap-4 lg:grid-cols-[1.25fr_0.75fr]">
         <div className="overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/45 p-3">
           {canCrop ? (
-            <Cropper
-              src={cleanedImage}
-              className="h-[620px] w-full"
-              initialAspectRatio={4 / 3}
-              guides
-              viewMode={1}
-              background={false}
-              responsive
-              autoCropArea={0.5}
-              checkOrientation={false}
-              ref={cropperRef}
-            />
+            <>
+              <div className="mb-3 rounded-2xl border border-cyan-200/10 bg-cyan-300/5 px-3 py-2 text-xs text-cyan-100">
+                目前框選來源：{sourceLabel}
+              </div>
+              <Cropper
+                src={selectedEditImage}
+                className="h-[620px] w-full"
+                initialAspectRatio={4 / 3}
+                guides
+                viewMode={1}
+                background={false}
+                responsive
+                autoCropArea={0.5}
+                checkOrientation={false}
+                ref={cropperRef}
+              />
+            </>
           ) : (
             <div className="flex h-[620px] items-center justify-center rounded-[22px] border border-dashed border-white/10 text-sm text-slate-400">
               先回到上傳頁完成預處理，這裡才會出現可操作的乾淨圖檔。
@@ -134,11 +157,16 @@ export default function CropWorkspace() {
 
         <div className="space-y-4">
           <div className="rounded-[28px] border border-white/10 bg-white/5 p-4">
-            <div className="text-sm font-medium text-white">裁切清單摘要</div>
-            <div className="mt-2 text-sm text-slate-300">目前已收錄 {crops.length} 題，之後可送到後端建立題庫與標籤。</div>
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-white">裁切清單 ({crops.length} 題)</div>
+              {crops.length > 0 && (
+                <Button size="sm" variant="secondary" onClick={() => navigate('/generate')}>前往組卷</Button>
+              )}
+            </div>
+            {autoCropMode && <div className="mt-2 text-xs text-cyan-300">連續框選模式開啟：框好後按「加入裁切」，圖片會保持在原位方便繼續框下一題</div>}
           </div>
 
-          <div className="max-h-[520px] space-y-3 overflow-auto pr-1">
+          <div className="max-h-[680px] space-y-3 overflow-auto pr-1">
             {summary.length === 0 ? (
               <div className="rounded-[24px] border border-dashed border-white/10 bg-white/5 p-4 text-sm text-slate-400">
                 尚未加入任何裁切題目，先在左側框選區塊，再按下「加入裁切清單」。
@@ -153,7 +181,7 @@ export default function CropWorkspace() {
                     </div>
                     <Button variant="ghost" size="sm" onClick={() => removeCrop(crop.id)}>刪除</Button>
                   </div>
-                  <img src={crop.imageUrl} alt={`crop-${index + 1}`} className="mt-3 h-32 w-full rounded-2xl object-cover" />
+                  <img src={crop.imageUrl} alt={`crop-${index + 1}`} className="mt-3 max-h-40 w-full rounded-2xl object-contain bg-slate-50" />
                   <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
                     <span>狀態：</span>
                     <span className="rounded-full border border-white/10 px-2 py-1 text-slate-200">

@@ -9,3 +9,8 @@ backend/.venv
 backend/data/
 __pycache__/
 *.pyc
+
+# Research & training data (large files)
+research/
+TrainData/
+*.pth

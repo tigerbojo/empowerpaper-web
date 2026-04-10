@@ -3,6 +3,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+CleanupMode = Literal['opencv', 'unpaper', 'ai', 'auto']
+CleanupProcessor = Literal['opencv', 'unpaper', 'ai']
+
 
 class UploadPaperResponse(BaseModel):
     paper_id: str
@@ -14,7 +17,7 @@ class CleanPaperRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     paper_id: str = Field(alias='paperId')
-    mode: Literal['basic', 'ai-enhanced'] = 'basic'
+    mode: CleanupMode = 'auto'
 
     @model_validator(mode='before')
     @classmethod
@@ -29,6 +32,9 @@ class CleanPaperResponse(BaseModel):
     job_id: str
     status: Literal['processing', 'completed']
     cleaned_image_url: str | None = None
+    ocr_image_url: str | None = None
+    processor: CleanupProcessor | None = None
+    requested_mode: CleanupMode = 'auto'
 
 
 class CleanJobResult(BaseModel):
@@ -36,7 +42,10 @@ class CleanJobResult(BaseModel):
     job_id: str
     status: Literal['processing', 'completed', 'failed']
     cleaned_image_url: str | None = None
+    ocr_image_url: str | None = None
     error: str | None = None
+    processor: CleanupProcessor | None = None
+    requested_mode: CleanupMode = 'auto'
 
 
 class StoredPaper(BaseModel):

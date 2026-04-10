@@ -17,6 +17,14 @@ function normalizeUploadResponse(data = {}) {
       data.cleanImageUrl ||
       data.clean_image_url ||
       null,
+    ocrImageUrl:
+      data.ocrImageUrl ||
+      data.ocr_image_url ||
+      data.ocrPreviewUrl ||
+      data.ocr_preview_url ||
+      null,
+    processor: data.processor || null,
+    requestedMode: data.requestedMode || data.requested_mode || null,
     status: data.status || 'uploaded',
     raw: data,
   }
@@ -36,8 +44,16 @@ function normalizeJobResponse(data = {}) {
       result.cleanImageUrl ||
       result.clean_image_url ||
       null,
+    ocrImageUrl:
+      data.ocrImageUrl ||
+      data.ocr_image_url ||
+      result.ocrImageUrl ||
+      result.ocr_image_url ||
+      null,
     paperId: data.paperId || data.paper_id || result.paperId || result.paper_id || null,
     jobId: data.jobId || data.job_id || result.jobId || result.job_id || null,
+    processor: data.processor || result.processor || null,
+    requestedMode: data.requestedMode || data.requested_mode || result.requestedMode || result.requested_mode || null,
     raw: data,
   }
 }
@@ -67,7 +83,7 @@ export function usePaperProcess() {
         return normalized
       }
       if (normalized.status === 'failed' || normalized.status === 'error') {
-        throw new Error('後端清理任務失敗')
+        throw new Error(data?.error || '後端清理任務失敗')
       }
       await new Promise((resolve) => setTimeout(resolve, intervalMs))
     }

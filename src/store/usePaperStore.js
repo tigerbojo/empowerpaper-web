@@ -3,6 +3,11 @@
 const initialState = {
   originalImage: null,
   cleanedImage: null,
+  cleanedOcrImage: null,
+  selectedEditImage: null,
+  selectedEditImageKind: 'cleaned',
+  cleanupMode: 'auto',
+  cleanupProcessor: null,
   currentPaperId: null,
   currentJobId: null,
   crops: [],
@@ -24,6 +29,11 @@ const usePaperStore = create((set) => ({
   setUploadStage: (uploadStage) => set({ uploadStage }),
   setOriginalImage: (originalImage) => set({ originalImage }),
   setCleanedImage: (cleanedImage) => set({ cleanedImage }),
+  setCleanedOcrImage: (cleanedOcrImage) => set({ cleanedOcrImage }),
+  setSelectedEditImage: (selectedEditImage, selectedEditImageKind = 'cleaned') =>
+    set({ selectedEditImage, selectedEditImageKind }),
+  setCleanupMode: (cleanupMode) => set({ cleanupMode }),
+  setCleanupProcessor: (cleanupProcessor) => set({ cleanupProcessor }),
   setCurrentPaperId: (currentPaperId) => set({ currentPaperId }),
   setCurrentJobId: (currentJobId) => set({ currentJobId }),
   setProcessingStatus: (processingStatus) => set({ processingStatus }),
