@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Button from '@/components/ui/Button'
 import GlassCard from '@/components/ui/GlassCard'
@@ -145,7 +145,8 @@ export default function Upload() {
         setUploadProgress(100)
         setProcessingStatus('completed')
         setUploadStage('completed')
-        pushToast({ tone: 'success', title: '預處理完成', description: `後端已完成清理並回傳雙預覽（模式：${cleanResult.processor || cleanupMode}）。` })
+        lastProcessedDarkness.current = darkness
+        pushToast({ tone: 'success', title: '預處理完成', description: '可以拖動下方滑桿微調印刷字深淺。' })
         setIsProcessing(false)
         return
       }
@@ -174,42 +175,40 @@ export default function Upload() {
     }
   }
 
-  // 用新 darkness 重新處理（不重新上傳，後端用同一張原圖）
-  const reprocessWithDarkness = async (newDarkness) => {
-    if (!currentPaperId || currentPaperId === 'mock-paper') return
-    setIsAdjusting(true)
-    try {
-      const cleanResult = await cleanMutation.mutateAsync({
-        paperId: currentPaperId,
-        paper_id: currentPaperId,
-        mode: cleanupMode,
-        darkness: newDarkness,
-      })
-
-      if (cleanResult.cleanedImageUrl) {
-        setCleanedImage(cleanResult.cleanedImageUrl)
-        setCleanedOcrImage(cleanResult.ocrImageUrl || cleanResult.cleanedImageUrl)
-        setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
-      } else if (cleanResult.jobId) {
-        const jobResult = await pollCleanJob(cleanResult.jobId)
-        if (jobResult.cleanedImageUrl) {
-          setCleanedImage(jobResult.cleanedImageUrl)
-          setCleanedOcrImage(jobResult.ocrImageUrl || jobResult.cleanedImageUrl)
-          setSelectedEditImage(jobResult.cleanedImageUrl, 'cleaned')
-        }
-      }
-    } catch (err) {
-      pushToast({ tone: 'warning', title: '調整失敗', description: err.message || '無法套用新的黑度設定' })
-    } finally {
-      setIsAdjusting(false)
-    }
-  }
+  // 用 ref 追蹤上次處理過的 darkness，避免初次處理完成觸發 reprocess
+  const lastProcessedDarkness = useRef(null)
 
   // 滑桿 debounce：停止拖動 600ms 後才送請求
   useEffect(() => {
     if (!cleanedImage || !currentPaperId || currentPaperId === 'mock-paper') return
-    const timer = setTimeout(() => {
-      reprocessWithDarkness(darkness)
+    // 跟上次 reprocess 一樣 → 跳過
+    if (lastProcessedDarkness.current === darkness) return
+
+    console.log('[darkness effect triggered]', { darkness, paperId: currentPaperId, last: lastProcessedDarkness.current })
+
+    const timer = setTimeout(async () => {
+      console.log('[reprocess start]', darkness)
+      lastProcessedDarkness.current = darkness
+      setIsAdjusting(true)
+      try {
+        const cleanResult = await cleanMutation.mutateAsync({
+          paperId: currentPaperId,
+          paper_id: currentPaperId,
+          mode: cleanupMode,
+          darkness,
+        })
+        console.log('[reprocess result]', cleanResult)
+
+        if (cleanResult.cleanedImageUrl) {
+          setCleanedImage(cleanResult.cleanedImageUrl)
+          setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
+        }
+      } catch (err) {
+        console.error('[reprocess error]', err)
+        pushToast({ tone: 'warning', title: '調整失敗', description: err.message || '無法套用新的黑度設定' })
+      } finally {
+        setIsAdjusting(false)
+      }
     }, 600)
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
