@@ -97,11 +97,68 @@ def _detect_text_grid(binary: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return h_in_line, v_in_line
 
 
-def _remove_gray_marks(enhanced: np.ndarray, binary: np.ndarray) -> np.ndarray:
+def _detect_chart_regions(binary: np.ndarray) -> np.ndarray:
     """
-    v3: 雙向投影行列偵測 + 局部密度 + 形狀特徵投票
+    偵測圖表/表格/幾何圖形區域，回傳 bool mask（True = 保護區，不可清除）
+
+    對數學考卷至關重要：座標軸、表格線、幾何圖、函數圖
+    在 _remove_gray_marks 投票時很容易被誤判成手寫。
+
+    策略：
+    1. 長直線（水平 + 垂直）→ 表格、座標軸、刻度線
+    2. 大型連通元件 → 幾何圖、函數圖
+    3. dilate 形成保護區
+    4. 安全閥：保護區 > 60% 視為偵測失敗，回傳全空
+    """
+    h, w = binary.shape
+    inv = (255 - binary).astype(np.uint8)
+    img_area = h * w
+
+    # 1. 長直線（kernel 長度約 = 圖片邊長 / 25，至少 40px）
+    h_kernel_len = max(40, w // 25)
+    v_kernel_len = max(40, h // 25)
+    h_lines = cv2.morphologyEx(
+        inv, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (h_kernel_len, 1)),
+    )
+    v_lines = cv2.morphologyEx(
+        inv, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_kernel_len)),
+    )
+    lines = cv2.bitwise_or(h_lines, v_lines)
+
+    # 2. 大型連通元件（幾何圖、函數圖）
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
+    large_mask = np.zeros_like(inv)
+    for label in range(1, num_labels):
+        area = stats[label, cv2.CC_STAT_AREA]
+        cw = stats[label, cv2.CC_STAT_WIDTH]
+        ch = stats[label, cv2.CC_STAT_HEIGHT]
+        bbox_area = cw * ch
+        # bbox 至少占整圖 2%，且邊長 >= 100px，且實際面積 > 200
+        if bbox_area > img_area * 0.02 and max(cw, ch) >= 100 and area > 200:
+            large_mask[labels == label] = 255
+
+    seed = cv2.bitwise_or(lines, large_mask)
+
+    # 3. dilate 把附近區域納入保護（避免邊緣被切掉）
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+    chart_region = cv2.dilate(seed, kernel, iterations=2)
+    chart_bool = chart_region > 0
+
+    # 4. 安全閥：保護區占比過大 → 偵測失敗，放棄保護
+    if float(np.mean(chart_bool)) > 0.6:
+        return np.zeros_like(chart_bool)
+
+    return chart_bool
+
+
+def _remove_gray_marks(enhanced: np.ndarray, binary: np.ndarray, chart_mask: np.ndarray) -> np.ndarray:
+    """
+    v4: 圖表保護 + 雙向投影 + 局部密度 + 形狀特徵投票
 
     核心策略：
+    - 圖表/表格/幾何圖區域內的元件直接保留，不參與手寫判定（v4 新增）
     - 印刷字會排在規律的水平行/垂直列上 → 兩個方向同時偏離 = 手寫
     - 印刷字密集分布 → 周圍密度低 = 孤立筆跡 = 手寫
     - 配合形狀特徵（密度、長寬比、面積）做投票
@@ -129,6 +186,12 @@ def _remove_gray_marks(enhanced: np.ndarray, binary: np.ndarray) -> np.ndarray:
         # 小雜點直接清除
         if area < 8:
             cleaned[labels == label] = 255
+            continue
+
+        # ★ v4 圖表保護：中心點落在圖表區 → 直接保留
+        cy_chk = min(y + ch // 2, h_img - 1)
+        cx_chk = min(x + cw // 2, w_img - 1)
+        if chart_mask[cy_chk, cx_chk]:
             continue
 
         # 行列對齊度
@@ -189,12 +252,13 @@ def _rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
     return cv2.warpAffine(image, matrix, (width, height), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
 
 
-def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.ndarray, darkness: float = 1.0) -> np.ndarray:
+def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.ndarray, chart_mask: np.ndarray | None = None, darkness: float = 1.0) -> np.ndarray:
     """
-    v9: 智慧雙向強化 + 細小符號保護 + 對比拉伸（無疊影）+ 可調黑度
+    v10: 智慧雙向強化 + 細小符號保護 + 圖表保護 + 對比拉伸 + 可調黑度
 
     - 印刷字區域：對比拉伸 + gamma → 又黑又銳利、無光暈
     - 細小符號（√、(A)、分數線、括號）：從原始 binary 救回保護
+    - 圖表/表格/幾何圖區域：強制視為印刷區（v10 新增），避免淡灰殘留清除誤殺
     - 非印刷區域：grayfilter 清除淡灰殘留
     - darkness: 0.5（較淡）~ 2.0（最深），預設 1.0
     """
@@ -233,6 +297,11 @@ def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.nd
             rescued |= (labels == label)
 
     is_printed_strong = is_printed | rescued
+
+    # ★ v10: 圖表區內的所有原始筆畫都視為印刷區（保護座標軸、表格線、幾何圖）
+    if chart_mask is not None:
+        original_ink = original_binary < 128
+        is_printed_strong = is_printed_strong | (chart_mask & original_ink)
 
     # 3. 印刷字保護 mask（5x5 dilate）
     printed_dilated = cv2.dilate(
@@ -275,11 +344,15 @@ def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.nd
         & (min_5x5 > 130)
     )
 
+    # ★ v10: 圖表區永遠不算淡灰殘留
+    if chart_mask is not None:
+        is_residue = is_residue & ~chart_mask
+
     return np.clip(np.where(is_residue, 255, result_print), 0, 255).astype(np.uint8)
 
 
-def _build_soft_clean_image(gray: np.ndarray, binary: np.ndarray, original_binary: np.ndarray | None = None, darkness: float = 1.0) -> np.ndarray:
-    """v9: 智慧雙向強化 + 細小符號保護 + 可調黑度"""
+def _build_soft_clean_image(gray: np.ndarray, binary: np.ndarray, original_binary: np.ndarray | None = None, chart_mask: np.ndarray | None = None, darkness: float = 1.0) -> np.ndarray:
+    """v10: 智慧雙向強化 + 細小符號保護 + 圖表保護 + 可調黑度"""
     white_lifted = cv2.normalize(gray, None, 40, 255, cv2.NORM_MINMAX)
     white_canvas = np.full_like(white_lifted, 255)
     base = cv2.addWeighted(white_lifted, 0.72, white_canvas, 0.28, 0)
@@ -287,7 +360,7 @@ def _build_soft_clean_image(gray: np.ndarray, binary: np.ndarray, original_binar
     if original_binary is None:
         original_binary = binary
 
-    return _smart_enhance(base, binary, original_binary, darkness)
+    return _smart_enhance(base, binary, original_binary, chart_mask, darkness)
 
 
 def _build_ocr_clean_image(gray: np.ndarray, binary: np.ndarray) -> np.ndarray:
@@ -331,9 +404,10 @@ def cleanup_exam_image_opencv(input_path: Path, output_path: Path, ocr_output_pa
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     enhanced = _normalize_document_background(gray)
     original_binary = _binarize_document(enhanced)
-    binary = _remove_gray_marks(enhanced, original_binary.copy())
+    chart_mask = _detect_chart_regions(original_binary)
+    binary = _remove_gray_marks(enhanced, original_binary.copy(), chart_mask)
 
-    output = _build_soft_clean_image(enhanced, binary, original_binary, darkness)
+    output = _build_soft_clean_image(enhanced, binary, original_binary, chart_mask, darkness)
     ocr_output = _build_ocr_clean_image(enhanced, binary)
 
     _write_png(output_path, output)
