@@ -21,4 +21,12 @@ export const paperApi = {
   submitCrop(payload, config) {
     return apiClient.post('/crops', payload, config)
   },
+
+  detectQuestions(paperId) {
+    // 用 vision LLM 偵測考卷上每一題的位置；回傳 normalized bbox
+    // 本地 Gemma 4 26B 處理一張考卷約 60-180 秒，必須拉高 timeout
+    return apiClient.post(`/papers/${paperId}/detect-questions`, undefined, {
+      timeout: 300000,
+    })
+  },
 }

@@ -8,10 +8,11 @@ from ..config import settings
 from ..document_warp import detect_document_corners, warp_document
 from ..image_cleanup import cleanup_exam_image
 from ..job_store import job_store
+from ..llm_vision import OllamaProvider, GeminiProvider, get_provider
 from ..schemas import (
     CleanJobResult, CleanPaperRequest, CleanPaperResponse,
-    Corner, DetectCornersResponse, UploadPaperResponse,
-    WarpPaperRequest, WarpPaperResponse,
+    Corner, DetectCornersResponse, DetectQuestionsResponse, QuestionBoxOut,
+    UploadPaperResponse, WarpPaperRequest, WarpPaperResponse,
 )
 from ..storage import storage
 
@@ -124,6 +125,40 @@ async def warp_paper(payload: WarpPaperRequest) -> WarpPaperResponse:
         raise HTTPException(status_code=500, detail=f'透視校正失敗：{exc}')
     finally:
         tmp_out.unlink(missing_ok=True)
+
+
+@router.post('/{paper_id}/detect-questions', response_model=DetectQuestionsResponse)
+async def detect_questions(paper_id: str) -> DetectQuestionsResponse:
+    """
+    用 vision LLM（本地 Gemma / Gemini）偵測考卷上每一題的位置。
+    回傳的 bbox 是 normalized 座標（0~1），前端可直接套到任意縮放尺寸。
+    """
+    import numpy as np
+
+    local_path = _get_paper_original_local(paper_id)
+    image_bytes = local_path.read_bytes()
+
+    # 讀尺寸（給前端用）
+    img = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=500, detail='無法讀取原圖')
+    h, w = img.shape[:2]
+
+    provider = get_provider()
+    provider_name = 'ollama' if isinstance(provider, OllamaProvider) else 'gemini'
+
+    try:
+        boxes = provider.detect_questions(image_bytes)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'LLM 偵測失敗（{provider_name}）：{exc}')
+
+    return DetectQuestionsResponse(
+        paper_id=paper_id,
+        image_width=w,
+        image_height=h,
+        provider=provider_name,
+        questions=[QuestionBoxOut(q_num=b.q_num, x=b.x, y=b.y, w=b.w, h=b.h, confidence=b.confidence) for b in boxes],
+    )
 
 
 @router.get('/history')

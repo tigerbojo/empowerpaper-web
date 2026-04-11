@@ -1,0 +1,229 @@
+"""
+LLM Vision provider 抽象層
+- OllamaProvider：本地 Ollama (gemma4:26b)，開發/PoC 預設
+- GeminiProvider：Google Gemini API，Cloud Run production fallback
+- get_provider()：依環境變數 EMPOWERPAPER_LLM_PROVIDER 自動挑選
+
+目前能力：
+- detect_questions(image_bytes) → list[QuestionBox]
+  讓 vision LLM 看一張完整考卷，回傳每一題的 normalized bbox + 題號
+
+設計重點：
+- 為什麼用 normalized coords：vision LLM 對絕對像素座標不準，
+  改成 0~1 的百分比讓模型只需要「相對位置」，誤差大幅下降。
+- 為什麼 think:false：根據先前 PoC 紀錄，Gemma 4 thinking tokens
+  會吃掉 JSON 輸出，必須關掉。
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import os
+from dataclasses import dataclass
+from typing import Literal
+from urllib import error as urlerr
+from urllib import request as urlreq
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class QuestionBox:
+    """單一題目偵測結果（normalized 座標 0~1）"""
+    q_num: str           # "1", "2(a)", "三", ...，由模型回傳的題號文字
+    x: float             # 左上 x（0~1）
+    y: float             # 左上 y（0~1）
+    w: float             # 寬度（0~1）
+    h: float             # 高度（0~1）
+    confidence: float = 0.0
+
+
+# ───────── Prompt ─────────
+
+DETECT_QUESTIONS_PROMPT = """你是考卷分析助手。請仔細觀察這張考卷圖片，把上面的「每一道題目」框出來。
+
+規則：
+1. 每一題包含：題號 + 題幹 + 選項（如果有）+ 圖表（如果有）
+2. 同一題的所有內容應該框成一個矩形
+3. 題號可能是阿拉伯數字（1. 2.）、國字（一、二、）、或括號（(1) (2)）
+4. 跨頁、子題（a)(b)(c)）視為同一題
+5. 標題、說明文字、學校名稱、姓名欄不要框
+
+請以 JSON 格式回傳，所有座標都用 0~1 的相對比例（左上為原點），不要用絕對像素：
+
+{
+  "questions": [
+    {"q_num": "1", "x": 0.05, "y": 0.10, "w": 0.90, "h": 0.08},
+    {"q_num": "2", "x": 0.05, "y": 0.20, "w": 0.90, "h": 0.12}
+  ]
+}
+
+只回傳 JSON，不要任何其他文字。"""
+
+
+# ───────── Ollama provider ─────────
+
+class OllamaProvider:
+    """本地 Ollama，預設 gemma4:26b"""
+
+    def __init__(self, base_url: str = '', model: str = ''):
+        self.base_url = (base_url or os.environ.get('EMPOWERPAPER_OLLAMA_URL', 'http://localhost:11434')).rstrip('/')
+        self.model = model or os.environ.get('EMPOWERPAPER_OLLAMA_MODEL', 'gemma4:26b')
+
+    def detect_questions(self, image_bytes: bytes, timeout: float = 180.0) -> list[QuestionBox]:
+        b64 = base64.b64encode(image_bytes).decode('ascii')
+        payload = {
+            'model': self.model,
+            'messages': [{
+                'role': 'user',
+                'content': DETECT_QUESTIONS_PROMPT,
+                'images': [b64],
+            }],
+            'stream': False,
+            'format': 'json',
+            'think': False,  # 必須關掉 thinking，否則會吃掉 JSON 輸出
+            'options': {
+                'temperature': 0.0,
+                'num_ctx': 8192,
+            },
+        }
+        req = urlreq.Request(
+            f'{self.base_url}/api/chat',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        try:
+            with urlreq.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode('utf-8')
+        except urlerr.URLError as exc:
+            raise RuntimeError(f'Ollama 連線失敗：{exc}')
+
+        try:
+            data = json.loads(raw)
+            content = data['message']['content']
+            parsed = json.loads(content)
+        except (KeyError, ValueError) as exc:
+            raise RuntimeError(f'Ollama 回應格式異常：{exc}\n原始回應：{raw[:500]}')
+
+        return _parse_questions(parsed)
+
+
+# ───────── Gemini provider ─────────
+
+class GeminiProvider:
+    """Google Gemini 2.5 Flash via REST API（避免額外依賴）"""
+
+    def __init__(self, api_key: str = '', model: str = ''):
+        self.api_key = api_key or os.environ.get('EMPOWERPAPER_GEMINI_API_KEY', '')
+        self.model = model or os.environ.get('EMPOWERPAPER_GEMINI_MODEL', 'gemini-2.5-flash')
+        if not self.api_key:
+            raise RuntimeError('未設定 EMPOWERPAPER_GEMINI_API_KEY')
+
+    def detect_questions(self, image_bytes: bytes, timeout: float = 60.0) -> list[QuestionBox]:
+        b64 = base64.b64encode(image_bytes).decode('ascii')
+        payload = {
+            'contents': [{
+                'parts': [
+                    {'text': DETECT_QUESTIONS_PROMPT},
+                    {'inline_data': {'mime_type': 'image/png', 'data': b64}},
+                ],
+            }],
+            'generationConfig': {
+                'temperature': 0.0,
+                'response_mime_type': 'application/json',
+            },
+        }
+        url = (
+            f'https://generativelanguage.googleapis.com/v1beta/models/'
+            f'{self.model}:generateContent?key={self.api_key}'
+        )
+        req = urlreq.Request(
+            url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        try:
+            with urlreq.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode('utf-8')
+        except urlerr.URLError as exc:
+            raise RuntimeError(f'Gemini 連線失敗：{exc}')
+
+        try:
+            data = json.loads(raw)
+            content = data['candidates'][0]['content']['parts'][0]['text']
+            parsed = json.loads(content)
+        except (KeyError, IndexError, ValueError) as exc:
+            raise RuntimeError(f'Gemini 回應格式異常：{exc}\n原始回應：{raw[:500]}')
+
+        return _parse_questions(parsed)
+
+
+# ───────── Helpers ─────────
+
+def _parse_questions(parsed: dict) -> list[QuestionBox]:
+    items = parsed.get('questions') if isinstance(parsed, dict) else None
+    if not isinstance(items, list):
+        raise RuntimeError(f'未找到 questions 陣列：{str(parsed)[:300]}')
+
+    boxes: list[QuestionBox] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            x = float(raw.get('x', 0))
+            y = float(raw.get('y', 0))
+            w = float(raw.get('w', 0))
+            h = float(raw.get('h', 0))
+        except (TypeError, ValueError):
+            continue
+        # 過濾不合法 bbox
+        if w <= 0 or h <= 0:
+            continue
+        # clamp 到 [0, 1]
+        x = max(0.0, min(1.0, x))
+        y = max(0.0, min(1.0, y))
+        w = max(0.0, min(1.0 - x, w))
+        h = max(0.0, min(1.0 - y, h))
+        boxes.append(QuestionBox(
+            q_num=str(raw.get('q_num', '?')),
+            x=x, y=y, w=w, h=h,
+            confidence=float(raw.get('confidence', 0.0) or 0.0),
+        ))
+    return boxes
+
+
+# ───────── Provider selector ─────────
+
+ProviderName = Literal['ollama', 'gemini', 'auto']
+
+
+def get_provider(prefer: ProviderName | None = None):
+    """
+    依環境變數選擇 provider。
+    EMPOWERPAPER_LLM_PROVIDER:
+      - "ollama" → 純本地（開發用）
+      - "gemini" → 純雲端（Cloud Run production）
+      - "auto"   → 先試 ollama，失敗退 gemini（預設）
+    """
+    name = (prefer or os.environ.get('EMPOWERPAPER_LLM_PROVIDER', 'auto')).lower()
+
+    if name == 'ollama':
+        return OllamaProvider()
+    if name == 'gemini':
+        return GeminiProvider()
+
+    # auto: 嘗試 ollama，連不上就用 gemini
+    try:
+        ollama = OllamaProvider()
+        # 用 /api/tags 做 ping（極快）
+        with urlreq.urlopen(f'{ollama.base_url}/api/tags', timeout=2.0) as resp:
+            if resp.status == 200:
+                return ollama
+    except Exception:
+        pass
+
+    return GeminiProvider()

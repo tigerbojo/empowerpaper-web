@@ -86,3 +86,21 @@ class WarpPaperResponse(BaseModel):
     warped_image_url: str
     width: int
     height: int
+
+
+class QuestionBoxOut(BaseModel):
+    """偵測到的單一題目（normalized 座標 0~1，方便前端套到任意縮放尺寸）"""
+    q_num: str
+    x: float
+    y: float
+    w: float
+    h: float
+    confidence: float = 0.0
+
+
+class DetectQuestionsResponse(BaseModel):
+    paper_id: str
+    image_width: int
+    image_height: int
+    provider: str            # "ollama" | "gemini"
+    questions: list[QuestionBoxOut]

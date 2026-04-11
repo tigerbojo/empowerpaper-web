@@ -6,8 +6,10 @@ import GlassCard from '@/components/ui/GlassCard'
 import Button from '@/components/ui/Button'
 import usePaperStore from '@/store/usePaperStore'
 import useUiStore from '@/store/useUiStore'
-import { blobToDataUrl, cropCanvasToBlob } from '@/features/cropping/utils/canvasCrop'
+import { blobToDataUrl, cropCanvasToBlob, cropImageByNormalizedBbox } from '@/features/cropping/utils/canvasCrop'
 import { useCropActions } from '@/features/cropping/hooks/useCropActions'
+import { paperApi } from '@/services/paperApi'
+import DetectedQuestionsPanel from './DetectedQuestionsPanel'
 
 function buildFallbackTags(index) {
   const presets = [
@@ -31,6 +33,9 @@ export default function CropWorkspace() {
   const pushToast = useUiStore((state) => state.pushToast)
   const [isSaving, setIsSaving] = useState(false)
   const [autoCropMode, setAutoCropMode] = useState(false)
+  const [isDetecting, setIsDetecting] = useState(false)
+  const [detectedBoxes, setDetectedBoxes] = useState([])
+  const [detectProvider, setDetectProvider] = useState(null)
   const { saveCropWithSuggestions } = useCropActions()
 
   const canCrop = Boolean(selectedEditImage)
@@ -43,6 +48,90 @@ export default function CropWorkspace() {
     () => crops.map((crop, index) => ({ ...crop, suggestionTags: crop.tags?.length ? crop.tags : buildFallbackTags(index) })),
     [crops],
   )
+
+  // ── AI 自動切題 ──
+  const handleDetectQuestions = async () => {
+    if (!currentPaperId) {
+      pushToast({ tone: 'warning', title: '尚未連結後端', description: '請先回上傳頁完成預處理。' })
+      return
+    }
+    setIsDetecting(true)
+    try {
+      const { data } = await paperApi.detectQuestions(currentPaperId)
+      setDetectedBoxes(data.questions || [])
+      setDetectProvider(data.provider || 'ollama')
+      pushToast({
+        tone: 'success',
+        title: `AI 偵測到 ${data.questions?.length || 0} 題`,
+        description: `模型：${data.provider === 'ollama' ? '本地 Gemma 4 26B' : 'Gemini 2.5 Flash'}`,
+      })
+    } catch (err) {
+      pushToast({
+        tone: 'warning',
+        title: 'AI 偵測失敗',
+        description: err?.response?.data?.detail || err.message || '請確認本地 Ollama 是否運作中',
+      })
+    } finally {
+      setIsDetecting(false)
+    }
+  }
+
+  // 把 AI 偵測的單一 box 轉成實際的 crop 並加入清單
+  const addDetectedBox = async (box, idx) => {
+    try {
+      const result = await cropImageByNormalizedBbox(selectedEditImage, box)
+      const localUrl = URL.createObjectURL(result.blob)
+      addCrop({
+        id: crypto.randomUUID(),
+        imageUrl: localUrl,
+        imageDataUrl: result.dataUrl,
+        width: result.width,
+        height: result.height,
+        x: result.x,
+        y: result.y,
+        tags: [],
+        status: 'ready',
+        autoLabel: `題 ${box.q_num}`,
+      })
+      pushToast({
+        tone: 'success',
+        title: `已加入第 ${box.q_num} 題`,
+        description: `${result.width} × ${result.height}`,
+      })
+    } catch (err) {
+      pushToast({ tone: 'warning', title: '切題失敗', description: err.message })
+    }
+  }
+
+  const addAllDetectedBoxes = async () => {
+    let okCount = 0
+    for (const box of detectedBoxes) {
+      try {
+        const result = await cropImageByNormalizedBbox(selectedEditImage, box)
+        const localUrl = URL.createObjectURL(result.blob)
+        addCrop({
+          id: crypto.randomUUID(),
+          imageUrl: localUrl,
+          imageDataUrl: result.dataUrl,
+          width: result.width,
+          height: result.height,
+          x: result.x,
+          y: result.y,
+          tags: [],
+          status: 'ready',
+          autoLabel: `題 ${box.q_num}`,
+        })
+        okCount += 1
+      } catch (err) {
+        console.error('addAllDetectedBoxes', err)
+      }
+    }
+    pushToast({
+      tone: 'success',
+      title: `成功加入 ${okCount} / ${detectedBoxes.length} 題`,
+      description: '可在右側清單檢查、刪除或繼續手動補框。',
+    })
+  }
 
   const captureCrop = async () => {
     if (!cropperRef.current?.cropper) return
@@ -114,6 +203,15 @@ export default function CropWorkspace() {
       description="當你確認裁切框位置後，可以將區塊存成 Blob，後續再送到後端做文字辨識與 AI 標籤建議。"
       actions={
         <>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!canCrop || isDetecting || !currentPaperId}
+            onClick={handleDetectQuestions}
+            title={!currentPaperId ? '請先回上傳頁完成預處理' : 'AI 自動偵測每題位置'}
+          >
+            {isDetecting ? '偵測中…' : '🤖 AI 自動切題'}
+          </Button>
           <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -128,6 +226,19 @@ export default function CropWorkspace() {
         </>
       }
     >
+      {detectedBoxes.length > 0 && canCrop && (
+        <div className="mb-4">
+          <DetectedQuestionsPanel
+            imageUrl={selectedEditImage}
+            boxes={detectedBoxes}
+            provider={detectProvider}
+            onAddOne={addDetectedBox}
+            onAddAll={addAllDetectedBoxes}
+            onClear={() => setDetectedBoxes([])}
+          />
+        </div>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-[1.25fr_0.75fr]">
         <div className="overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/45 p-3">
           {canCrop ? (
