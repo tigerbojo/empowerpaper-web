@@ -5,6 +5,7 @@ import GlassCard from '@/components/ui/GlassCard'
 import NoticeBanner from '@/components/ui/NoticeBanner'
 import Spinner from '@/components/ui/Spinner'
 import ScanFrame from '@/features/paper-process/components/ScanFrame'
+import EraserModal from '@/features/paper-process/components/EraserModal'
 import { useImageUpload } from '@/features/paper-process/hooks/useImageUpload'
 import { usePaperProcess } from '@/features/paper-process/hooks/usePaperProcess'
 import usePaperStore from '@/store/usePaperStore'
@@ -183,6 +184,15 @@ export default function Upload() {
   const [rotation, setRotation] = useState(0)
   // 旋轉前的「基礎」圖片（每次重新處理或載入時更新）
   const baseCleanedImageRef = useRef(null)
+  // 橡皮擦 modal
+  const [eraserOpen, setEraserOpen] = useState(false)
+  const handleEraserApply = (newUrl) => {
+    setCleanedImage(newUrl)
+    setSelectedEditImage(newUrl, 'cleaned')
+    baseCleanedImageRef.current = newUrl // 後續滑桿/旋轉以這張為基準
+    setEraserOpen(false)
+  }
+
   // Zoom + pan
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
@@ -469,11 +479,29 @@ export default function Upload() {
                     <Button size="sm" variant="secondary" onClick={() => handleRotate(180)}>⇅ 翻轉</Button>
                   </div>
                 </div>
+
+                <div className="mt-3 rounded-[18px] border border-white/10 bg-slate-950/40 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-slate-300">手動微調瑕疵</div>
+                  </div>
+                  <div className="mt-2 text-xs text-slate-400">用橡皮擦或矩形清除工具，把殘留的瑕疵蓋成白色。</div>
+                  <Button size="sm" className="mt-3 w-full" onClick={() => setEraserOpen(true)}>
+                    🖌 開啟編輯器
+                  </Button>
+                </div>
               </>
             )}
           </div>
         </div>
       </ScanFrame>
+
+      {eraserOpen && cleanedImage && (
+        <EraserModal
+          imageUrl={cleanedImage}
+          onClose={() => setEraserOpen(false)}
+          onApply={handleEraserApply}
+        />
+      )}
     </div>
   )
 }
