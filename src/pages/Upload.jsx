@@ -19,11 +19,20 @@ function buildFilename(file) {
   return `${base}.webp`
 }
 
+// 四步驟：1=選檔 2=旋轉 3=校正 4=完成
+const STEPS = [
+  { id: 1, label: '載入考卷' },
+  { id: 2, label: '旋轉方向' },
+  { id: 3, label: '梯形校正' },
+  { id: 4, label: '辨識處理' },
+]
+
 export default function Upload() {
   const navigate = useNavigate()
   const { file, error, previewUrl, compressed, isCompressing, onSelectFile, replaceCompressed } = useImageUpload()
   const [isProcessing, setIsProcessing] = useState(false)
   const [isAdjusting, setIsAdjusting] = useState(false)
+  const [step, setStep] = useState(1)
   const uploadProgress = usePaperStore((state) => state.uploadProgress)
   const uploadStage = usePaperStore((state) => state.uploadStage)
   const cleanupMode = usePaperStore((state) => state.cleanupMode)
@@ -54,7 +63,10 @@ export default function Upload() {
     if (!previewUrl) return
     setOriginalImage(previewUrl)
     setSelectedEditImage(previewUrl, 'original')
-  }, [previewUrl, setOriginalImage, setSelectedEditImage])
+    // 第一次選檔後自動進入旋轉步驟
+    if (step === 1) setStep(2)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewUrl])
 
   const meta = useMemo(() => {
     if (!compressed) return []
@@ -150,7 +162,8 @@ export default function Upload() {
         lastProcessedDarkness.current = darkness
         baseCleanedImageRef.current = cleanResult.cleanedImageUrl
         setRotation(0)
-        pushToast({ tone: 'success', title: '預處理完成', description: '可以拖動下方滑桿微調印刷字深淺。' })
+        setStep(4)
+        pushToast({ tone: 'success', title: '辨識完成', description: '可以拖動下方滑桿微調印刷字深淺。' })
         setIsProcessing(false)
         return
       }
@@ -223,24 +236,50 @@ export default function Upload() {
     }
   }
 
-  // 校正完成：更新 originalImage + 把 warped 顯示在處理後預覽
-  const handleCornerApply = (warpedUrl) => {
+  // 校正完成：更新 originalImage + 自動進入 step 4 做辨識
+  const handleCornerApply = async (warpedUrl) => {
     setOriginalImage(warpedUrl)
-    // 把 warped 圖直接當作「處理後預覽」顯示，讓使用者看到校正結果
-    setCleanedImage(warpedUrl)
-    setSelectedEditImage(warpedUrl, 'cleaned')
-    baseCleanedImageRef.current = warpedUrl
-    setProcessingStatus('completed')
-    setUploadStage('completed')
-    // 重設 darkness 和 rotation（因為是新的底圖）
-    lastProcessedDarkness.current = null
-    setRotation(0)
     setCornerOpen(false)
     pushToast({
       tone: 'success',
       title: '校正完成',
-      description: '下方顯示的是校正後的版本，按「開始處理」可以再套用去手寫流程。',
+      description: '自動套用去手寫處理…',
     })
+    // 進入 step 4 並自動觸發辨識
+    setStep(4)
+    // 稍等 UI 更新再跑
+    setTimeout(() => {
+      handleProcessFromWarped()
+    }, 100)
+  }
+
+  // step 4: 用 warped 後的 paper 做 cleanup（paper 已經存在 backend）
+  const handleProcessFromWarped = async () => {
+    setIsProcessing(true)
+    setProcessingStatus('processing')
+    setUploadStage('cleaning')
+    try {
+      const cleanResult = await cleanMutation.mutateAsync({
+        paperId: currentPaperId,
+        paper_id: currentPaperId,
+        mode: cleanupMode,
+        darkness,
+      })
+      if (cleanResult.cleanedImageUrl) {
+        setCleanedImage(cleanResult.cleanedImageUrl)
+        setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
+        baseCleanedImageRef.current = cleanResult.cleanedImageUrl
+        lastProcessedDarkness.current = darkness
+        setRotation(0)
+        setProcessingStatus('completed')
+        setUploadStage('completed')
+        pushToast({ tone: 'success', title: '辨識完成', description: '可以拖動滑桿微調黑度。' })
+      }
+    } catch (err) {
+      pushToast({ tone: 'warning', title: '辨識失敗', description: err.message })
+    } finally {
+      setIsProcessing(false)
+    }
   }
 
   // Zoom + pan
@@ -424,70 +463,138 @@ export default function Upload() {
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
-      <GlassCard title="上傳試卷" description="上傳考卷照片，系統會自動去除手寫痕跡、加強印刷字、產出乾淨的複習卷。">
-        <label className="flex min-h-[260px] cursor-pointer flex-col items-center justify-center rounded-[28px] border border-dashed border-cyan-200/25 bg-slate-950/35 px-6 text-center text-slate-300 transition hover:bg-slate-950/45">
-          <input type="file" accept="image/*" className="hidden" onChange={(event) => onSelectFile(event.target.files?.[0])} />
-          <div className="text-lg font-medium text-white">選擇要處理的試卷照片</div>
-          <div className="mt-2 text-sm text-slate-400">前端會先將最長邊限制在 2048px 並轉成 WebP，再送往 FastAPI。</div>
-        </label>
+      <GlassCard title="處理步驟" description="跟著四個步驟就能得到乾淨的考卷：載入 → 旋轉 → 校正 → 辨識。">
+        {/* Step indicator */}
+        <div className="flex items-center justify-between gap-2 rounded-[24px] border border-white/10 bg-slate-950/40 p-3">
+          {STEPS.map((s, idx) => (
+            <div key={s.id} className="flex flex-1 items-center gap-2">
+              <div
+                className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border-2 text-xs font-bold ${
+                  step > s.id
+                    ? 'border-cyan-400 bg-cyan-400 text-slate-900'
+                    : step === s.id
+                      ? 'border-cyan-400 bg-cyan-400/20 text-cyan-300'
+                      : 'border-white/20 bg-slate-900 text-slate-500'
+                }`}
+              >
+                {step > s.id ? '✓' : s.id}
+              </div>
+              <div className={`text-xs ${step >= s.id ? 'text-white' : 'text-slate-500'}`}>
+                {s.label}
+              </div>
+              {idx < STEPS.length - 1 && (
+                <div className={`h-px flex-1 ${step > s.id ? 'bg-cyan-400' : 'bg-white/10'}`} />
+              )}
+            </div>
+          ))}
+        </div>
 
-        {error && <p className="mt-3 text-sm text-rose-300">{error}</p>}
-
-        {file && !error && (
-          <div className="mt-4 space-y-3 rounded-[24px] border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
-            <div>檔名：{file.name}</div>
-            {meta.length > 0 && <div>{meta.join(' ｜ ')}</div>}
-            {(isCompressing || isProcessing) && <Spinner label={statusLabel} />}
+        {/* === Step 1: 載入考卷 === */}
+        {step === 1 && (
+          <div className="mt-4 space-y-3">
+            <label className="flex min-h-[240px] cursor-pointer flex-col items-center justify-center rounded-[28px] border border-dashed border-cyan-200/25 bg-slate-950/35 px-6 text-center text-slate-300 transition hover:bg-slate-950/45">
+              <input type="file" accept="image/*" className="hidden" onChange={(event) => onSelectFile(event.target.files?.[0])} />
+              <div className="text-lg font-medium text-white">📷 選擇考卷照片</div>
+              <div className="mt-2 text-sm text-slate-400">支援 JPG / PNG / HEIC，前端會自動壓縮到 2048px</div>
+            </label>
+            {error && <p className="text-sm text-rose-300">{error}</p>}
+            {isCompressing && <Spinner label="正在壓縮圖片…" />}
           </div>
         )}
 
-        {!file && (
-          <div className="mt-4">
-            <NoticeBanner title="尚未選擇試卷照片" description="先上傳一張清楚的考卷圖片，系統才會開始壓縮與預處理。" />
-          </div>
-        )}
-
-        {file && cleanedImage && (
-          <div className="mt-4">
-            <NoticeBanner tone="success" title="預處理已完成" description="可以前往框選頁挑選錯題。" actions={<Button size="sm" onClick={() => navigate('/edit')}>前往框選頁</Button>} />
-          </div>
-        )}
-
-        {previewOptions.length > 0 && (
-          <div className="mt-4 rounded-[24px] border border-white/10 bg-white/5 p-4">
-            <div className="text-sm font-medium text-white">框選頁影像來源</div>
-            <div className="mt-2 text-sm text-slate-400">先選定你要帶進框選頁的版本。原圖通常最穩，閱讀版適合人眼，OCR 版則偏向辨識用途。</div>
-            <div className="mt-4 flex flex-wrap gap-3">
-              {previewOptions.map((option) => (
-                <Button
-                  key={option.key}
-                  size="sm"
-                  variant={selectedEditImageKind === option.key ? 'primary' : 'secondary'}
-                  onClick={() => setSelectedEditImage(option.image, option.key)}
-                >
-                  {option.label}
-                </Button>
-              ))}
+        {/* === Step 2: 旋轉方向 === */}
+        {step === 2 && (
+          <div className="mt-4 space-y-3">
+            <div className="rounded-[20px] border border-white/10 bg-slate-950/40 p-4">
+              <div className="text-sm font-medium text-white">調整方向</div>
+              <div className="mt-1 text-xs text-slate-400">如果照片是橫的或倒的，用下面按鈕轉正。右側預覽會即時更新。</div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(-90)}>↺ 左轉 90°</Button>
+                <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(90)}>↻ 右轉 90°</Button>
+                <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(180)}>⇅ 翻轉 180°</Button>
+              </div>
+            </div>
+            <div className="text-xs text-slate-400">檔名：{file?.name}</div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" size="sm" onClick={() => { setStep(1); replaceCompressed(null); }}>
+                ← 重新選檔
+              </Button>
+              <Button
+                className="ml-auto"
+                disabled={!compressed || correctingUpload}
+                onClick={async () => {
+                  await handleOpenCornerAdjust()
+                  setStep(3)
+                }}
+              >
+                {correctingUpload ? '準備中…' : '下一步：校正 →'}
+              </Button>
             </div>
           </div>
         )}
 
-        {file && !cleanedImage && processingStatus !== 'idle' && (
-          <div className="mt-4">
-            <NoticeBanner tone="warning" title="正在處理中…" description={`目前階段：${uploadStage}`} />
+        {/* === Step 3: 梯形校正 === */}
+        {step === 3 && (
+          <div className="mt-4 space-y-3">
+            <div className="rounded-[20px] border border-white/10 bg-slate-950/40 p-4">
+              <div className="text-sm font-medium text-white">梯形校正</div>
+              <div className="mt-1 text-xs text-slate-400">
+                {cornerOpen
+                  ? '請在彈出的校正視窗中拖動 4 個角點'
+                  : '點下方按鈕打開校正工具，拖動角點框住文件邊緣'}
+              </div>
+              <div className="mt-3">
+                <Button size="sm" onClick={() => setCornerOpen(true)}>📐 打開校正工具</Button>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setStep(2)}>← 返回旋轉</Button>
+              <Button
+                className="ml-auto"
+                variant="secondary"
+                onClick={() => { setStep(4); handleProcess(); }}
+              >
+                跳過校正，直接辨識 →
+              </Button>
+            </div>
           </div>
         )}
 
-        <div className="mt-5 flex flex-wrap gap-3">
-          <Button disabled={!compressed || isCompressing || isProcessing} onClick={handleProcess}>開始處理</Button>
-          <Button
-            variant="secondary"
-            disabled={!compressed || isCompressing || isProcessing || correctingUpload}
-            onClick={handleOpenCornerAdjust}
-          >
-            {correctingUpload ? '準備校正…' : '📐 校正文件'}
-          </Button>
-        </div>
+        {/* === Step 4: 辨識完成 === */}
+        {step === 4 && (
+          <div className="mt-4 space-y-3">
+            {isProcessing && (
+              <div className="rounded-[20px] border border-cyan-400/30 bg-cyan-400/10 p-4">
+                <Spinner label={statusLabel} />
+              </div>
+            )}
+            {cleanedImage && !isProcessing && (
+              <NoticeBanner
+                tone="success"
+                title="辨識完成"
+                description="右側可以拖滑桿微調深度、旋轉、用橡皮擦微調瑕疵。"
+                actions={<Button size="sm" onClick={() => navigate('/edit')}>前往框選頁 →</Button>}
+              />
+            )}
+            <div className="flex gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setStep(3)}>← 返回校正</Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setStep(1)
+                  replaceCompressed(null)
+                  setCurrentPaperId(null)
+                  setCleanedImage(null)
+                  setOriginalImage(null)
+                  baseCleanedImageRef.current = null
+                }}
+              >
+                重新開始
+              </Button>
+            </div>
+          </div>
+        )}
       </GlassCard>
 
       <ScanFrame>
