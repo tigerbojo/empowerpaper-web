@@ -18,6 +18,12 @@ export default function EraserModal({ imageUrl, onClose, onApply }) {
   const [isDrawing, setIsDrawing] = useState(false)
   const [rectStart, setRectStart] = useState(null)
   const [imgLoaded, setImgLoaded] = useState(false)
+  // 游標視覺提示（CSS 座標，相對於 canvas 容器）
+  const [cursorPos, setCursorPos] = useState(null)
+  // 矩形拖動預覽（CSS 座標）
+  const [rectPreview, setRectPreview] = useState(null)
+  // canvas 實際顯示尺寸 → 原圖尺寸的比例（用於換算 brush size 顯示）
+  const [scale, setScale] = useState(1)
 
   // 初始化 canvas
   useEffect(() => {
@@ -41,7 +47,7 @@ export default function EraserModal({ imageUrl, onClose, onApply }) {
     img.src = imageUrl
   }, [imageUrl])
 
-  // 取得 canvas 內座標（從 mouse event）
+  // 取得 canvas 內座標（canvas 實際像素）+ CSS 座標（相對 container）
   const getCanvasPos = (e) => {
     const canvas = canvasRef.current
     const rect = canvas.getBoundingClientRect()
@@ -49,9 +55,17 @@ export default function EraserModal({ imageUrl, onClose, onApply }) {
     const scaleY = canvas.height / rect.height
     const clientX = e.touches ? e.touches[0].clientX : e.clientX
     const clientY = e.touches ? e.touches[0].clientY : e.clientY
+    const cssX = clientX - rect.left
+    const cssY = clientY - rect.top
+    // 更新顯示比例
+    if (scale !== canvas.width / rect.width) {
+      setScale(canvas.width / rect.width)
+    }
     return {
-      x: (clientX - rect.left) * scaleX,
-      y: (clientY - rect.top) * scaleY,
+      x: cssX * scaleX,
+      y: cssY * scaleY,
+      cssX,
+      cssY,
     }
   }
 
@@ -95,7 +109,7 @@ export default function EraserModal({ imageUrl, onClose, onApply }) {
     loadSnapshot(history[newIndex])
   }
 
-  // ── Brush 模式 ──
+  // ── Brush / Rect 模式 ──
   const handleMouseDown = (e) => {
     e.preventDefault()
     const pos = getCanvasPos(e)
@@ -118,12 +132,29 @@ export default function EraserModal({ imageUrl, onClose, onApply }) {
   }
 
   const handleMouseMove = (e) => {
+    const pos = getCanvasPos(e)
+    // 更新 cursor 顯示
+    setCursorPos({ cssX: pos.cssX, cssY: pos.cssY })
+
     if (tool === 'brush' && isDrawing) {
-      const pos = getCanvasPos(e)
       const ctx = canvasRef.current.getContext('2d')
       ctx.lineTo(pos.x, pos.y)
       ctx.stroke()
+    } else if (tool === 'rect' && rectStart) {
+      // 更新矩形預覽（CSS 座標）
+      const startCssX = rectStart.cssX
+      const startCssY = rectStart.cssY
+      setRectPreview({
+        x: Math.min(startCssX, pos.cssX),
+        y: Math.min(startCssY, pos.cssY),
+        w: Math.abs(pos.cssX - startCssX),
+        h: Math.abs(pos.cssY - startCssY),
+      })
     }
+  }
+
+  const handleMouseLeave = () => {
+    setCursorPos(null)
   }
 
   const handleMouseUp = (e) => {
@@ -143,6 +174,7 @@ export default function EraserModal({ imageUrl, onClose, onApply }) {
         pushSnapshot()
       }
       setRectStart(null)
+      setRectPreview(null)
     }
   }
 
@@ -206,23 +238,61 @@ export default function EraserModal({ imageUrl, onClose, onApply }) {
         {/* Canvas */}
         <div className="flex-1 overflow-auto rounded-2xl border border-white/10 bg-white p-2">
           {!imgLoaded && <div className="flex h-64 items-center justify-center text-slate-400">載入中…</div>}
-          <canvas
-            ref={canvasRef}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            onTouchStart={handleMouseDown}
-            onTouchMove={handleMouseMove}
-            onTouchEnd={handleMouseUp}
-            style={{
-              maxWidth: '100%',
-              height: 'auto',
-              display: imgLoaded ? 'block' : 'none',
-              cursor: tool === 'brush' ? 'crosshair' : 'crosshair',
-              touchAction: 'none',
-            }}
-          />
+          <div className="relative inline-block" style={{ display: imgLoaded ? 'inline-block' : 'none' }}>
+            <canvas
+              ref={canvasRef}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={(e) => { handleMouseUp(e); handleMouseLeave() }}
+              onTouchStart={handleMouseDown}
+              onTouchMove={handleMouseMove}
+              onTouchEnd={handleMouseUp}
+              style={{
+                maxWidth: '100%',
+                height: 'auto',
+                display: 'block',
+                cursor: 'none', // 隱藏系統游標，用自訂指示器
+                touchAction: 'none',
+              }}
+            />
+            {/* 橡皮擦 cursor 指示圈（粉色半透明） */}
+            {imgLoaded && tool === 'brush' && cursorPos && (
+              <div
+                className="pointer-events-none absolute rounded-full border-2"
+                style={{
+                  left: cursorPos.cssX - (brushSize / scale) / 2,
+                  top: cursorPos.cssY - (brushSize / scale) / 2,
+                  width: brushSize / scale,
+                  height: brushSize / scale,
+                  borderColor: '#ec4899',
+                  backgroundColor: 'rgba(236, 72, 153, 0.25)',
+                  boxShadow: '0 0 0 1px rgba(255,255,255,0.6)',
+                }}
+              />
+            )}
+            {/* 矩形清除的十字線游標 */}
+            {imgLoaded && tool === 'rect' && cursorPos && !rectPreview && (
+              <>
+                <div className="pointer-events-none absolute" style={{ left: cursorPos.cssX - 1, top: 0, width: 2, height: '100%', backgroundColor: 'rgba(236, 72, 153, 0.5)' }} />
+                <div className="pointer-events-none absolute" style={{ top: cursorPos.cssY - 1, left: 0, height: 2, width: '100%', backgroundColor: 'rgba(236, 72, 153, 0.5)' }} />
+              </>
+            )}
+            {/* 矩形選取預覽（粉色虛線框） */}
+            {imgLoaded && tool === 'rect' && rectPreview && (
+              <div
+                className="pointer-events-none absolute border-2 border-dashed"
+                style={{
+                  left: rectPreview.x,
+                  top: rectPreview.y,
+                  width: rectPreview.w,
+                  height: rectPreview.h,
+                  borderColor: '#ec4899',
+                  backgroundColor: 'rgba(236, 72, 153, 0.15)',
+                }}
+              />
+            )}
+          </div>
         </div>
 
         {/* Footer */}
