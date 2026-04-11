@@ -130,25 +130,43 @@ async def warp_paper(payload: WarpPaperRequest) -> WarpPaperResponse:
 @router.post('/{paper_id}/detect-questions', response_model=DetectQuestionsResponse)
 async def detect_questions(paper_id: str) -> DetectQuestionsResponse:
     """
-    用 vision LLM（本地 Gemma / Gemini）偵測考卷上每一題的位置。
-    回傳的 bbox 是 normalized 座標（0~1），前端可直接套到任意縮放尺寸。
+    用 vision LLM 偵測考卷上每一題的位置。
+
+    PoC 結論（2026-04-11）：
+    - Gemini 2.5 Flash 在正常單頁直式考卷上 14/14 全對 ✅
+    - 本地 Gemma 4 26B 不堪用（給絕對 bbox 全是亂猜的 grid）❌
+    - 預設走 gemini（settings.llm_provider）
+
+    回傳：normalized bbox（0~1），前端可直接套到任意縮放尺寸。
     """
     import numpy as np
 
     local_path = _get_paper_original_local(paper_id)
     image_bytes = local_path.read_bytes()
 
-    # 讀尺寸（給前端用）
+    # 讀尺寸（給前端用）+ 縮圖預處理（vision LLM 對解析度敏感，
+    # 太大會慢且不會更準；1600px 是 PoC 驗證過的甜蜜點）
     img = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise HTTPException(status_code=500, detail='無法讀取原圖')
     h, w = img.shape[:2]
 
+    max_side = 1600
+    if max(h, w) > max_side:
+        scale = max_side / max(h, w)
+        small = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    else:
+        small = img
+    ok, encoded = cv2.imencode('.png', small)
+    if not ok:
+        raise HTTPException(status_code=500, detail='無法重新編碼圖片')
+    send_bytes = encoded.tobytes()
+
     provider = get_provider()
     provider_name = 'ollama' if isinstance(provider, OllamaProvider) else 'gemini'
 
     try:
-        boxes = provider.detect_questions(image_bytes)
+        boxes = provider.detect_questions(send_bytes)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f'LLM 偵測失敗（{provider_name}）：{exc}')
 

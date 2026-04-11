@@ -14,6 +14,15 @@ class Settings(BaseSettings):
     supabase_url: str = ''
     supabase_service_key: str = ''
     supabase_bucket: str = 'papers'
+    # LLM Vision provider
+    # PoC 驗證：Gemini 2.5 Flash 在正常單頁考卷上 14/14 全對；
+    # 本地 Gemma 4 26B 完全不行（給絕對 bbox 都是亂猜的 grid）。
+    # 預設用 gemini，本地若想試 ollama 可設 EMPOWERPAPER_LLM_PROVIDER=ollama
+    llm_provider: str = 'gemini'
+    gemini_api_key: str = ''
+    gemini_model: str = 'gemini-2.5-flash'
+    ollama_url: str = 'http://localhost:11434'
+    ollama_model: str = 'gemma4:26b'
     allowed_origins: list[str] = Field(default_factory=lambda: [
         'http://localhost:5173',
         'http://localhost:5174',

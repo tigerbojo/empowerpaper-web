@@ -21,12 +21,47 @@ import base64
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Literal
 from urllib import error as urlerr
 from urllib import request as urlreq
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_json(content: str) -> dict:
+    """
+    從 LLM 回應中萃取 JSON。
+    Gemma 即使被指定 format:json 也常會包成 ```json ... ``` markdown fence，
+    所以這裡要寬容處理：先試直接 parse，再試剝 fence，最後試正則撈第一個 {...}。
+    """
+    if not content:
+        raise ValueError('空回應')
+
+    # 1. 直接 parse
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. 剝掉 ```json ... ``` 或 ``` ... ```
+    fenced = re.search(r'```(?:json)?\s*(.+?)\s*```', content, re.DOTALL)
+    if fenced:
+        try:
+            return json.loads(fenced.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # 3. 撈最外層 {...}
+    brace = re.search(r'\{.*\}', content, re.DOTALL)
+    if brace:
+        try:
+            return json.loads(brace.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f'無法解析 JSON，原始內容前 300 字：{content[:300]}')
 
 
 @dataclass
@@ -104,7 +139,7 @@ class OllamaProvider:
         try:
             data = json.loads(raw)
             content = data['message']['content']
-            parsed = json.loads(content)
+            parsed = _extract_json(content)
         except (KeyError, ValueError) as exc:
             raise RuntimeError(f'Ollama 回應格式異常：{exc}\n原始回應：{raw[:500]}')
 
@@ -122,7 +157,8 @@ class GeminiProvider:
         if not self.api_key:
             raise RuntimeError('未設定 EMPOWERPAPER_GEMINI_API_KEY')
 
-    def detect_questions(self, image_bytes: bytes, timeout: float = 60.0) -> list[QuestionBox]:
+    def detect_questions(self, image_bytes: bytes, timeout: float = 180.0) -> list[QuestionBox]:
+        # gemini-2.5-flash 處理一張完整考卷約 25-45 秒，timeout 預設 180s
         b64 = base64.b64encode(image_bytes).decode('ascii')
         payload = {
             'contents': [{
@@ -146,16 +182,33 @@ class GeminiProvider:
             headers={'Content-Type': 'application/json'},
             method='POST',
         )
-        try:
-            with urlreq.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode('utf-8')
-        except urlerr.URLError as exc:
-            raise RuntimeError(f'Gemini 連線失敗：{exc}')
+
+        # 503/429 retry：Gemini free tier 偶爾 overloaded 或 quota，
+        # 退避重試 3 次（2s → 5s → 10s）
+        last_exc = None
+        for attempt, backoff in enumerate([2, 5, 10]):
+            try:
+                with urlreq.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read().decode('utf-8')
+                break
+            except urlerr.HTTPError as exc:
+                last_exc = exc
+                if exc.code in (429, 500, 502, 503, 504):
+                    logger.warning(f'Gemini {exc.code}, retry in {backoff}s (attempt {attempt + 1}/3)')
+                    import time
+                    time.sleep(backoff)
+                    continue
+                raise RuntimeError(f'Gemini HTTP {exc.code}: {exc.reason}')
+            except urlerr.URLError as exc:
+                last_exc = exc
+                raise RuntimeError(f'Gemini 連線失敗：{exc}')
+        else:
+            raise RuntimeError(f'Gemini 連續 503/429（已重試 3 次）：{last_exc}')
 
         try:
             data = json.loads(raw)
             content = data['candidates'][0]['content']['parts'][0]['text']
-            parsed = json.loads(content)
+            parsed = _extract_json(content)
         except (KeyError, IndexError, ValueError) as exc:
             raise RuntimeError(f'Gemini 回應格式異常：{exc}\n原始回應：{raw[:500]}')
 
@@ -205,11 +258,13 @@ def get_provider(prefer: ProviderName | None = None):
     """
     依環境變數選擇 provider。
     EMPOWERPAPER_LLM_PROVIDER:
-      - "ollama" → 純本地（開發用）
-      - "gemini" → 純雲端（Cloud Run production）
-      - "auto"   → 先試 ollama，失敗退 gemini（預設）
+      - "ollama" → 純本地（開發用，僅供實驗，PoC 已驗證 Gemma 4 26B 不堪用）
+      - "gemini" → 純雲端（PoC 已驗證 Gemini 2.5 Flash 在正常考卷 14/14 全對）
+      - "auto"   → 先試 ollama，失敗退 gemini
+
+    預設值：'gemini'（產品線唯一可信路徑）
     """
-    name = (prefer or os.environ.get('EMPOWERPAPER_LLM_PROVIDER', 'auto')).lower()
+    name = (prefer or os.environ.get('EMPOWERPAPER_LLM_PROVIDER', 'gemini')).lower()
 
     if name == 'ollama':
         return OllamaProvider()
@@ -219,7 +274,6 @@ def get_provider(prefer: ProviderName | None = None):
     # auto: 嘗試 ollama，連不上就用 gemini
     try:
         ollama = OllamaProvider()
-        # 用 /api/tags 做 ping（極快）
         with urlreq.urlopen(f'{ollama.base_url}/api/tags', timeout=2.0) as resp:
             if resp.status == 200:
                 return ollama
