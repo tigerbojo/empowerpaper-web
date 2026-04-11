@@ -1,12 +1,18 @@
 ﻿import tempfile
 from pathlib import Path
 
+import cv2
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from ..config import settings
+from ..document_warp import detect_document_corners, warp_document
 from ..image_cleanup import cleanup_exam_image
 from ..job_store import job_store
-from ..schemas import CleanJobResult, CleanPaperRequest, CleanPaperResponse, UploadPaperResponse
+from ..schemas import (
+    CleanJobResult, CleanPaperRequest, CleanPaperResponse,
+    Corner, DetectCornersResponse, UploadPaperResponse,
+    WarpPaperRequest, WarpPaperResponse,
+)
 from ..storage import storage
 
 router = APIRouter(prefix='/papers', tags=['papers'])
@@ -24,6 +30,100 @@ def _build_local_clean_path(paper_id: str, mode: str, darkness: float = 1.0) -> 
 def _build_local_ocr_path(paper_id: str, mode: str) -> Path:
     suffix = 'ocr' if mode == 'auto' else f'ocr-{mode}'
     return storage.cleaned / f'{paper_id}-{suffix}.png'
+
+
+def _get_paper_original_local(paper_id: str) -> Path:
+    """取得原圖本地路徑（Supabase mode 會先下載到 tmp）"""
+    if settings.use_supabase:
+        paper = storage.get_paper(paper_id)
+        if not paper:
+            raise HTTPException(status_code=404, detail='找不到對應的 paperId')
+        return storage.download_to_tmp(paper['original_path'])
+    else:
+        if paper_id not in papers_index:
+            raise HTTPException(status_code=404, detail='找不到對應的 paperId')
+        return papers_index[paper_id]
+
+
+@router.get('/{paper_id}/detect-corners', response_model=DetectCornersResponse)
+async def detect_corners(paper_id: str) -> DetectCornersResponse:
+    """自動偵測文件四邊形角點"""
+    import numpy as np
+    local_path = _get_paper_original_local(paper_id)
+    corners = detect_document_corners(local_path)
+
+    img = cv2.imdecode(
+        np.frombuffer(local_path.read_bytes(), dtype=np.uint8),
+        cv2.IMREAD_COLOR,
+    )
+    h, w = img.shape[:2]
+
+    return DetectCornersResponse(
+        paper_id=paper_id,
+        image_width=w,
+        image_height=h,
+        corners=[Corner(x=x, y=y) for x, y in corners],
+    )
+
+
+@router.post('/warp', response_model=WarpPaperResponse)
+async def warp_paper(payload: WarpPaperRequest) -> WarpPaperResponse:
+    """
+    根據 4 個角點做透視校正
+    覆寫 original image（後續 clean 會用校正後的版本）
+    """
+    if len(payload.corners) != 4:
+        raise HTTPException(status_code=400, detail='必須提供 4 個角點')
+
+    corners = [(c.x, c.y) for c in payload.corners]
+    local_path = _get_paper_original_local(payload.paper_id)
+
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+        tmp_out = Path(tmp.name)
+
+    try:
+        import numpy as np
+        warp_document(local_path, corners, tmp_out)
+
+        # 讀尺寸
+        warped_img = cv2.imdecode(
+            np.frombuffer(tmp_out.read_bytes(), dtype=np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        h, w = warped_img.shape[:2]
+
+        if settings.use_supabase:
+            # 上傳到 Supabase，覆寫原 path（加 -warped 後綴避免 cache）
+            paper = storage.get_paper(payload.paper_id)
+            if not paper:
+                raise HTTPException(status_code=404, detail='找不到對應的 paperId')
+            new_path = f'uploads/{payload.paper_id}-warped.png'
+            storage.upload_bytes(new_path, tmp_out.read_bytes(), 'image/png')
+            # 更新 DB 的 original_path 指向 warped 版本
+            storage.client.table('papers').update({
+                'original_path': new_path,
+                'cleaned_paths': {},  # 清掉舊的 cleanup cache
+            }).eq('paper_id', payload.paper_id).execute()
+            warped_url = storage.public_url(new_path)
+        else:
+            # Local：直接覆寫
+            warped_path = storage.uploads / f'{payload.paper_id}-warped.png'
+            warped_path.write_bytes(tmp_out.read_bytes())
+            papers_index[payload.paper_id] = warped_path
+            warped_url = storage.public_url(warped_path)
+
+        return WarpPaperResponse(
+            paper_id=payload.paper_id,
+            warped_image_url=warped_url,
+            width=w,
+            height=h,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'透視校正失敗：{exc}')
+    finally:
+        tmp_out.unlink(missing_ok=True)
 
 
 @router.get('/history')

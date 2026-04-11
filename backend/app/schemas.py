@@ -53,3 +53,36 @@ class StoredPaper(BaseModel):
     paper_id: str
     original_path: Path
     cleaned_path: Path | None = None
+
+
+class Corner(BaseModel):
+    x: float
+    y: float
+
+
+class DetectCornersResponse(BaseModel):
+    paper_id: str
+    image_width: int
+    image_height: int
+    corners: list[Corner]  # 順序：左上、右上、右下、左下
+
+
+class WarpPaperRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    paper_id: str = Field(alias='paperId')
+    corners: list[Corner]
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict) and 'paper_id' in data and 'paperId' not in data:
+            data = {**data, 'paperId': data['paper_id']}
+        return data
+
+
+class WarpPaperResponse(BaseModel):
+    paper_id: str
+    warped_image_url: str
+    width: int
+    height: int

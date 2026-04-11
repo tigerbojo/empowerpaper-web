@@ -6,6 +6,7 @@ import NoticeBanner from '@/components/ui/NoticeBanner'
 import Spinner from '@/components/ui/Spinner'
 import ScanFrame from '@/features/paper-process/components/ScanFrame'
 import EraserModal from '@/features/paper-process/components/EraserModal'
+import CornerAdjustModal from '@/features/paper-process/components/CornerAdjustModal'
 import { useImageUpload } from '@/features/paper-process/hooks/useImageUpload'
 import { usePaperProcess } from '@/features/paper-process/hooks/usePaperProcess'
 import usePaperStore from '@/store/usePaperStore'
@@ -189,8 +190,51 @@ export default function Upload() {
   const handleEraserApply = (newUrl) => {
     setCleanedImage(newUrl)
     setSelectedEditImage(newUrl, 'cleaned')
-    baseCleanedImageRef.current = newUrl // 後續滑桿/旋轉以這張為基準
+    baseCleanedImageRef.current = newUrl
     setEraserOpen(false)
+  }
+
+  // 文件校正 modal
+  const [cornerOpen, setCornerOpen] = useState(false)
+  const [correctingUpload, setCorrectingUpload] = useState(false)
+
+  // 開啟校正：如果還沒上傳過，先做一次 upload
+  const handleOpenCornerAdjust = async () => {
+    if (!compressed) return
+    if (currentPaperId && currentPaperId !== 'mock-paper') {
+      setCornerOpen(true)
+      return
+    }
+    // 先上傳（不做清理）
+    setCorrectingUpload(true)
+    try {
+      const uploadResult = await uploadMutation.mutateAsync({
+        blob: compressed.blob,
+        filename: buildFilename(file),
+        onUploadProgress: () => {},
+      })
+      if (uploadResult.paperId) setCurrentPaperId(uploadResult.paperId)
+      if (uploadResult.originalImageUrl) setOriginalImage(uploadResult.originalImageUrl)
+      setCornerOpen(true)
+    } catch (err) {
+      pushToast({ tone: 'warning', title: '無法開啟校正', description: err.message || '上傳失敗' })
+    } finally {
+      setCorrectingUpload(false)
+    }
+  }
+
+  // 校正完成：更新 originalImage，提示使用者按「開始處理」
+  const handleCornerApply = (warpedUrl) => {
+    setOriginalImage(warpedUrl)
+    setCleanedImage(null) // 清掉舊的清理結果，強迫重新處理
+    setSelectedEditImage(warpedUrl, 'original')
+    baseCleanedImageRef.current = null
+    setCornerOpen(false)
+    pushToast({
+      tone: 'success',
+      title: '校正完成',
+      description: '請按「開始處理」套用去手寫流程。',
+    })
   }
 
   // Zoom + pan
@@ -392,6 +436,13 @@ export default function Upload() {
 
         <div className="mt-5 flex flex-wrap gap-3">
           <Button disabled={!compressed || isCompressing || isProcessing} onClick={handleProcess}>開始處理</Button>
+          <Button
+            variant="secondary"
+            disabled={!compressed || isCompressing || isProcessing || correctingUpload}
+            onClick={handleOpenCornerAdjust}
+          >
+            {correctingUpload ? '準備校正…' : '📐 校正文件'}
+          </Button>
         </div>
       </GlassCard>
 
@@ -500,6 +551,15 @@ export default function Upload() {
           imageUrl={cleanedImage}
           onClose={() => setEraserOpen(false)}
           onApply={handleEraserApply}
+        />
+      )}
+
+      {cornerOpen && currentPaperId && (
+        <CornerAdjustModal
+          paperId={currentPaperId}
+          originalImageUrl={usePaperStore.getState().originalImage || previewUrl}
+          onClose={() => setCornerOpen(false)}
+          onApply={handleCornerApply}
         />
       )}
     </div>
