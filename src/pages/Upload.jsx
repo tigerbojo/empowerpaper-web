@@ -223,17 +223,23 @@ export default function Upload() {
     }
   }
 
-  // 校正完成：更新 originalImage，提示使用者按「開始處理」
+  // 校正完成：更新 originalImage + 把 warped 顯示在處理後預覽
   const handleCornerApply = (warpedUrl) => {
     setOriginalImage(warpedUrl)
-    setCleanedImage(null) // 清掉舊的清理結果，強迫重新處理
-    setSelectedEditImage(warpedUrl, 'original')
-    baseCleanedImageRef.current = null
+    // 把 warped 圖直接當作「處理後預覽」顯示，讓使用者看到校正結果
+    setCleanedImage(warpedUrl)
+    setSelectedEditImage(warpedUrl, 'cleaned')
+    baseCleanedImageRef.current = warpedUrl
+    setProcessingStatus('completed')
+    setUploadStage('completed')
+    // 重設 darkness 和 rotation（因為是新的底圖）
+    lastProcessedDarkness.current = null
+    setRotation(0)
     setCornerOpen(false)
     pushToast({
       tone: 'success',
       title: '校正完成',
-      description: '請按「開始處理」套用去手寫流程。',
+      description: '下方顯示的是校正後的版本，按「開始處理」可以再套用去手寫流程。',
     })
   }
 
