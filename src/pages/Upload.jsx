@@ -21,7 +21,7 @@ function buildFilename(file) {
 
 export default function Upload() {
   const navigate = useNavigate()
-  const { file, error, previewUrl, compressed, isCompressing, onSelectFile } = useImageUpload()
+  const { file, error, previewUrl, compressed, isCompressing, onSelectFile, replaceCompressed } = useImageUpload()
   const [isProcessing, setIsProcessing] = useState(false)
   const [isAdjusting, setIsAdjusting] = useState(false)
   const uploadProgress = usePaperStore((state) => state.uploadProgress)
@@ -320,6 +320,44 @@ export default function Upload() {
     }
   }
 
+  // 旋轉「原圖」（未處理的壓縮版），用於拍歪的照片
+  const handleRotateOriginal = async (delta) => {
+    if (!compressed?.previewUrl) return
+    try {
+      const rotatedUrl = await rotateImage(compressed.previewUrl, (delta + 360) % 360)
+      // 把 blob URL 轉回 Blob + 尺寸，更新 compressed
+      const blob = await (await fetch(rotatedUrl)).blob()
+      const img = new Image()
+      await new Promise((resolve, reject) => {
+        img.onload = resolve
+        img.onerror = reject
+        img.src = rotatedUrl
+      })
+      replaceCompressed({
+        blob,
+        previewUrl: rotatedUrl,
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+        mimeType: blob.type || 'image/png',
+      })
+      // 如果已經上傳過（有 paperId），要重新上傳，因為 backend 拿到的還是舊的
+      if (currentPaperId) {
+        setCurrentPaperId(null)
+        setOriginalImage(null)
+        setCleanedImage(null)
+        baseCleanedImageRef.current = null
+        setRotation(0)
+        pushToast({
+          tone: 'info',
+          title: '原圖已旋轉',
+          description: '請重新按「開始處理」或「校正文件」',
+        })
+      }
+    } catch (err) {
+      pushToast({ tone: 'warning', title: '旋轉原圖失敗', description: err.message })
+    }
+  }
+
   // 滑桿 debounce：停止拖動 600ms 後才送請求
   useEffect(() => {
     if (!cleanedImage || !currentPaperId || currentPaperId === 'mock-paper') return
@@ -457,7 +495,14 @@ export default function Upload() {
           <div>
             <div className="mb-2 text-sm font-medium text-slate-300">原始圖片</div>
             {previewUrl ? (
-              <img src={previewUrl} alt="original preview" className="max-h-[300px] w-full rounded-[22px] object-contain" />
+              <>
+                <img src={previewUrl} alt="original preview" className="max-h-[300px] w-full rounded-[22px] object-contain" />
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(-90)}>↺ 左轉</Button>
+                  <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(90)}>↻ 右轉</Button>
+                  <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(180)}>⇅ 翻轉</Button>
+                </div>
+              </>
             ) : (
               <div className="flex min-h-[220px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">上傳完成後，這裡會顯示原始圖片預覽。</div>
             )}

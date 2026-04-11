@@ -31,6 +31,11 @@ export function useImageUpload() {
     }
   }
 
+  // 外部可呼叫，把 compressed 換成處理後（例如旋轉）的新版本
+  const replaceCompressed = (newCompressed) => {
+    setCompressed(newCompressed)
+  }
+
   return {
     file,
     error,
@@ -38,5 +43,6 @@ export function useImageUpload() {
     compressed,
     isCompressing,
     onSelectFile,
+    replaceCompressed,
   }
 }
