@@ -15,10 +15,10 @@ import usePaperStore from '@/store/usePaperStore'
 import useUiStore from '@/store/useUiStore'
 import { formatPercent } from '@/utils/formatters'
 
-function buildFilename(file) {
+function buildFilename(file, pageNumber = null) {
   if (!file?.name) return 'paper.webp'
   const base = file.name.replace(/\.[^.]+$/, '')
-  return `${base}.webp`
+  return pageNumber ? `${base}-p${pageNumber}.webp` : `${base}.webp`
 }
 
 // 四步驟：1=選檔 2=旋轉 3=校正 4=完成
@@ -31,7 +31,10 @@ const STEPS = [
 
 export default function Upload() {
   const navigate = useNavigate()
-  const { file, error, previewUrl, compressed, isCompressing, onSelectFile, replaceCompressed } = useImageUpload()
+  const {
+    file, error, previewUrl, compressed, isCompressing,
+    onSelectFile, replaceCompressed, pdfPages, activePdfPage, selectPdfPage,
+  } = useImageUpload()
   const [isProcessing, setIsProcessing] = useState(false)
   const [step, setStep] = useState(1)
   const uploadProgress = usePaperStore((state) => state.uploadProgress)
@@ -120,6 +123,27 @@ export default function Upload() {
     setSelectedEditImage(displayUrl, 'cleaned')
   }
 
+  // PDF 選頁：每一頁都是獨立的考卷，切頁時把舊 paper 的狀態全部重置
+  const handleSelectPdfPage = (page) => {
+    if (page.pageNumber === activePdfPage) {
+      setStep(2)
+      return
+    }
+    setCurrentPaperId(null)
+    setCleanedImage(null)
+    setCleanedOcrImage(null)
+    setOriginalImage(null)
+    setComponents(null)
+    setProcessError(null)
+    baseCleanedImageRef.current = null
+    serverBaseRef.current = null
+    bakedDarknessRef.current = 1.0
+    manualEditsRef.current = false
+    setRotation(0)
+    selectPdfPage(page)
+    setStep(2)
+  }
+
   const handleProcess = async () => {
     if (!compressed) return
 
@@ -136,7 +160,7 @@ export default function Upload() {
     try {
       const uploadResult = await uploadMutation.mutateAsync({
         blob: compressed.blob,
-        filename: buildFilename(file),
+        filename: buildFilename(file, activePdfPage),
         onUploadProgress: (event) => {
           if (!event.total) return
           const percent = Math.min(100, Math.round((event.loaded / event.total) * 45))
@@ -256,7 +280,7 @@ export default function Upload() {
     try {
       const uploadResult = await uploadMutation.mutateAsync({
         blob: compressed.blob,
-        filename: buildFilename(file),
+        filename: buildFilename(file, activePdfPage),
         onUploadProgress: () => {},
       })
       if (uploadResult.paperId) setCurrentPaperId(uploadResult.paperId)
@@ -470,13 +494,41 @@ export default function Upload() {
         {/* === Step 1: 載入考卷 === */}
         {step === 1 && (
           <div className="mt-4 space-y-3">
-            <label className="flex min-h-[240px] cursor-pointer flex-col items-center justify-center rounded-[28px] border border-dashed border-cyan-200/25 bg-slate-950/35 px-6 text-center text-slate-300 transition hover:bg-slate-950/45">
-              <input type="file" accept="image/*" className="hidden" onChange={(event) => onSelectFile(event.target.files?.[0])} />
-              <div className="text-lg font-medium text-white">📷 選擇考卷照片</div>
-              <div className="mt-2 text-sm text-slate-400">支援 JPG / PNG / HEIC，前端會自動壓縮到 2048px</div>
+            <label className={`flex cursor-pointer flex-col items-center justify-center rounded-[28px] border border-dashed border-cyan-200/25 bg-slate-950/35 px-6 text-center text-slate-300 transition hover:bg-slate-950/45 ${pdfPages.length > 0 ? 'min-h-[100px] py-4' : 'min-h-[240px]'}`}>
+              <input type="file" accept="image/*,application/pdf,.pdf" className="hidden" onChange={(event) => onSelectFile(event.target.files?.[0])} />
+              <div className="text-lg font-medium text-white">📷 選擇考卷照片或 PDF</div>
+              <div className="mt-2 text-sm text-slate-400">支援 JPG / PNG / HEIC / PDF（多頁 PDF 可逐頁處理），自動轉成 2048px 圖片</div>
             </label>
             {error && <p className="text-sm text-rose-300">{error}</p>}
-            {isCompressing && <Spinner label="正在壓縮圖片…" />}
+            {isCompressing && <Spinner label={file && file.name?.toLowerCase().endsWith('.pdf') ? '正在轉換 PDF 頁面…' : '正在壓縮圖片…'} />}
+
+            {/* PDF 多頁：選擇要處理的頁面 */}
+            {pdfPages.length > 0 && !isCompressing && (
+              <div className="rounded-[20px] border border-white/10 bg-slate-950/40 p-4">
+                <div className="text-sm font-medium text-white">選擇要處理的頁面（共 {pdfPages.length} 頁）</div>
+                <div className="mt-1 text-xs text-slate-400">每一頁是一張獨立考卷；處理完一頁後可回到這裡選下一頁。</div>
+                <div className="mt-3 grid max-h-[420px] grid-cols-3 gap-3 overflow-y-auto sm:grid-cols-4">
+                  {pdfPages.map((page) => (
+                    <button
+                      key={page.pageNumber}
+                      onClick={() => handleSelectPdfPage(page)}
+                      className={`group relative overflow-hidden rounded-xl border-2 bg-white transition ${
+                        page.pageNumber === activePdfPage
+                          ? 'border-cyan-400 ring-2 ring-cyan-400/40'
+                          : 'border-white/10 hover:border-cyan-300/60'
+                      }`}
+                    >
+                      <img src={page.previewUrl} alt={`第 ${page.pageNumber} 頁`} className="aspect-[3/4] w-full object-contain" />
+                      <div className={`absolute inset-x-0 bottom-0 py-1 text-center text-xs font-medium ${
+                        page.pageNumber === activePdfPage ? 'bg-cyan-400 text-slate-900' : 'bg-slate-900/80 text-slate-200'
+                      }`}>
+                        第 {page.pageNumber} 頁{page.pageNumber === activePdfPage ? '（目前）' : ''}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -494,7 +546,15 @@ export default function Upload() {
             </div>
             <div className="text-xs text-slate-400">檔名：{file?.name}</div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="secondary" size="sm" onClick={() => { setStep(1); replaceCompressed(null); }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setStep(1)
+                  // 多頁 PDF 回到選頁畫面就好，不清掉已轉好的頁面
+                  if (pdfPages.length <= 1) replaceCompressed(null)
+                }}
+              >
                 ← 重新選檔
               </Button>
               <Button

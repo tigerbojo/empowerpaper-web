@@ -1,7 +1,9 @@
 export function validateImageFile(file) {
   if (!file) return '請先選擇檔案'
-  if (!file.type.startsWith('image/')) return '只支援圖片檔案'
-  if (file.size > 15 * 1024 * 1024) return '檔案需小於 15MB'
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')
+  if (!file.type.startsWith('image/') && !isPdf) return '只支援圖片或 PDF 檔案'
+  const limit = isPdf ? 40 : 15
+  if (file.size > limit * 1024 * 1024) return `檔案需小於 ${limit}MB`
   return ''
 }
 
