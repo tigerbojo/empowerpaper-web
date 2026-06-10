@@ -8,7 +8,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from ..config import settings
 from ..document_warp import detect_document_corners, warp_document
-from ..image_cleanup import cleanup_exam_image
+from ..image_cleanup import PIPELINE_VERSION, cleanup_exam_image
 from ..job_store import job_store
 from ..llm_vision import OllamaProvider, GeminiProvider, get_provider
 from ..schemas import (
@@ -35,7 +35,7 @@ def _overrides_hash(keep_ids: list[int], erase_ids: list[int]) -> str:
 def _build_local_clean_path(paper_id: str, mode: str, darkness: float = 1.0, ov_hash: str = '') -> Path:
     dk_suffix = '' if abs(darkness - 1.0) < 0.01 else f'-d{int(darkness * 100)}'
     suffix = ('cleaned' if mode == 'auto' else f'cleaned-{mode}') + dk_suffix + ov_hash
-    return storage.cleaned / f'{paper_id}-{suffix}.png'
+    return storage.cleaned / f'{paper_id}-{suffix}-{PIPELINE_VERSION}.png'
 
 
 def _components_sidecar_path(cleaned_path: Path) -> Path:
@@ -224,8 +224,12 @@ async def list_papers(limit: int = 50) -> dict:
     items = []
     for p in papers:
         cleaned_paths = p.get('cleaned_paths') or {}
-        # 找預設 darkness=1.0 的清理結果
-        cleaned_path = cleaned_paths.get('1.0') or next(iter(cleaned_paths.values()), None)
+        # 找預設 darkness=1.0 的清理結果（優先當前管線版本，回退舊格式）
+        cleaned_path = (
+            cleaned_paths.get(f'1.0@{PIPELINE_VERSION}')
+            or cleaned_paths.get('1.0')
+            or next(iter(cleaned_paths.values()), None)
+        )
         items.append({
             'paper_id': p['paper_id'],
             'original_url': storage.public_url(p['original_path']),
@@ -325,14 +329,14 @@ async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperRespons
 
     ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids)
     cleaned_path = storage.build_cleaned_path(payload.paper_id, payload.mode, payload.darkness)
-    if ov_hash:
-        cleaned_path = cleaned_path.replace('.png', f'{ov_hash}.png')
+    cleaned_path = cleaned_path.replace('.png', f'{ov_hash}-{PIPELINE_VERSION}.png')
     sidecar_path = f'{cleaned_path}.json'
 
     # 檢查是否已處理過此 darkness（僅限無覆寫的 base 結果；
     # 覆寫結果 deterministic，但 registry 只記 darkness key，直接重算）
+    # key 含管線版本：演算法升級後舊 cache 自動失效
     cleaned_paths = paper.get('cleaned_paths') or {}
-    darkness_key = str(round(payload.darkness, 2))
+    darkness_key = f'{round(payload.darkness, 2)}@{PIPELINE_VERSION}'
     if not ov_hash and darkness_key in cleaned_paths:
         components_doc = None
         if payload.include_components:

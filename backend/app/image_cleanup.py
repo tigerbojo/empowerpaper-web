@@ -9,6 +9,10 @@ import numpy as np
 
 from .schemas import CleanupMode, CleanupProcessor
 
+# 擦除管線版本 — 進 cache key。演算法有感變更時 bump，
+# 否則舊的 cleaned cache 會把修復前的結果一直吐給使用者
+PIPELINE_VERSION = 'v114'
+
 
 @dataclass
 class CleanupArtifacts:
