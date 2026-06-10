@@ -25,6 +25,12 @@ from app.image_cleanup import cleanup_exam_image_opencv  # noqa: E402
 # 合成考卷：規律的「印刷字」網格 + 一筆偏離網格的深色「手寫」
 PRINT_ROWS = range(100, 620, 70)
 HW_ROI = (700, 700, 160, 110)  # x, y, w, h — 文字網格下方的孤立區
+# 印刷數學符號（+ / = / 小數點），放在文字行中段的空隙 — BUG-R6 的受測對象
+OP_ROW_Y = 240
+OP_GAP_XS = (568, 592, 616)  # 該行這幾個 x 不畫黑塊，留給符號
+OP_PLUS_ROI = (568, 242, 14, 14)
+OP_EQ_ROI = (592, 243, 14, 12)
+OP_DOT_ROI = (618, 250, 4, 4)
 
 
 # cv2.imread/imwrite 在 CJK 路徑（C:\Users\強哥\...\pytest-of-強哥）會靜默失敗，
@@ -43,13 +49,25 @@ def imread_gray_u(path: Path) -> np.ndarray:
 @pytest.fixture(scope='module')
 def synthetic_paper(tmp_path_factory):
     img = np.full((900, 1200, 3), 255, np.uint8)
-    # 印刷字：每行一排小黑塊（對齊網格、密集）
+    # 印刷字：每行一排小黑塊（對齊網格、密集）；符號行留空隙
     for y in PRINT_ROWS:
         for x in range(100, 1100, 24):
+            if y == OP_ROW_Y and x in OP_GAP_XS:
+                continue
             cv2.rectangle(img, (x, y), (x + 12, y + 16), (10, 10, 10), -1)
     # 手寫：深色粗斜線（off-grid + 孤立 → 必被投票擦除）
     hx, hy, hw, hh = HW_ROI
     cv2.line(img, (hx, hy + hh - 10), (hx + hw - 10, hy), (50, 50, 50), 7)
+    # 印刷數學符號：細筆畫的 + / = / 小數點，貼著第三行文字（on-grid）
+    # 模擬 PDF render 反鋸齒的偏淡筆畫（灰 90，比黑塊 10 淡）
+    px, py = OP_PLUS_ROI[0], OP_PLUS_ROI[1]
+    cv2.line(img, (px, py + 7), (px + 13, py + 7), (90, 90, 90), 2)
+    cv2.line(img, (px + 6, py), (px + 6, py + 13), (90, 90, 90), 2)
+    ex, ey = OP_EQ_ROI[0], OP_EQ_ROI[1]
+    cv2.line(img, (ex, ey + 3), (ex + 13, ey + 3), (90, 90, 90), 2)
+    cv2.line(img, (ex, ey + 9), (ex + 13, ey + 9), (90, 90, 90), 2)
+    dx, dy = OP_DOT_ROI[0], OP_DOT_ROI[1]
+    cv2.rectangle(img, (dx, dy), (dx + 3, dy + 3), (60, 60, 60), -1)
     path = tmp_path_factory.mktemp('data') / 'synthetic.png'
     imwrite_u(path, img)
     return path
@@ -169,6 +187,18 @@ def test_bug_r4_api_cache_returns_components(synthetic_paper, monkeypatch, tmp_p
     assert r3['cleaned_image_url'] != r1['cleaned_image_url'], '覆寫結果覆蓋了基準 cache'
     m = {c['id']: c for c in r3['components']}
     assert m[erased_id]['kind'] == 'restored'
+
+
+def test_bug_r6_math_operators_preserved(synthetic_paper, tmp_path):
+    """BUG-R6：印刷的 + / = / 小數點不得被擦除（細筆畫偏淡 ≠ 手寫）
+
+    2026-06-11 v11 faint 投票誤殺案例：聯立方程式的 +、=、小數點全消失，
+    題目無法判讀。faint 投票必須有尺寸門檻；二值化雜點門檻不能殺小數點。
+    """
+    _, gray = run_cleanup(synthetic_paper, tmp_path, 'ops')
+    for name, roi in [('plus', OP_PLUS_ROI), ('equals', OP_EQ_ROI), ('dot', OP_DOT_ROI)]:
+        area = roi_pixels(gray, roi)
+        assert float(area.min()) < 180, f'印刷符號 {name} 被擦掉了（BUG-R6 再發）'
 
 
 def test_bug_r5_no_fake_progress_fallback():

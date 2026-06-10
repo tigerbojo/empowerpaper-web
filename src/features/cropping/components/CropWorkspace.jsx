@@ -200,7 +200,7 @@ export default function CropWorkspace() {
   return (
     <GlassCard
       title="錯題裁切工作區"
-      description="當你確認裁切框位置後，可以將區塊存成 Blob，後續再送到後端做文字辨識與 AI 標籤建議。"
+      description="拖動圖上的藍色選框框住一題，按「加入裁切」收進右側清單；或按「🤖 AI 自動切題」讓 AI 一次找出所有題目。"
       actions={
         <>
           <Button
@@ -279,8 +279,13 @@ export default function CropWorkspace() {
 
           <div className="max-h-[680px] space-y-3 overflow-auto pr-1">
             {summary.length === 0 ? (
-              <div className="rounded-[24px] border border-dashed border-white/10 bg-white/5 p-4 text-sm text-slate-400">
-                尚未加入任何裁切題目，先在左側框選區塊，再按下「加入裁切清單」。
+              <div className="rounded-[24px] border border-dashed border-white/10 bg-white/5 p-4 text-sm leading-relaxed text-slate-400">
+                <div className="font-medium text-slate-300">清單還是空的</div>
+                <div className="mt-1">
+                  ① 拖動左側圖上的選框，框住一整題（含題號和選項）<br />
+                  ② 按右上角「加入裁切」<br />
+                  懶得一題一題框？按「🤖 AI 自動切題」讓 AI 找出每一題。
+                </div>
               </div>
             ) : (
               summary.map((crop, index) => (

@@ -20,15 +20,32 @@ export default function Edit() {
   return (
     <div className="space-y-5">
       <GlassCard
-        title="錯題框選與 AI 標籤"
-        description="先手動框選題目區塊，之後會將裁切影像送往 OCR 與 AI 做分類、標籤與題庫整理。"
-      />
+        title="框選錯題 — 做一份只有錯題的複習卷"
+        description="把學生答錯（或想再練一次）的題目一題一題裁下來，下一步就能組成乾淨的 A4 複習卷 PDF。"
+      >
+        {/* 使用流程：一眼看懂這頁怎麼用 */}
+        <div className="mt-3 grid gap-2 text-sm sm:grid-cols-3">
+          {[
+            { n: '1', title: '框住一題', desc: '拖動左側圖上的選框，框住一整題（按 🤖 可讓 AI 自動找題）' },
+            { n: '2', title: '加入裁切', desc: '按右上角「加入裁切」，題目會收進右側清單' },
+            { n: '3', title: '前往組卷', desc: '全部裁完後按「前往組卷」，輸出複習卷 PDF' },
+          ].map((s) => (
+            <div key={s.n} className="flex gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-3">
+              <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-cyan-400/20 text-sm font-bold text-cyan-300">{s.n}</div>
+              <div>
+                <div className="font-medium text-white">{s.title}</div>
+                <div className="mt-0.5 text-xs leading-relaxed text-slate-400">{s.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </GlassCard>
 
       {!selectedEditImage && (
         <NoticeBanner
           tone="warning"
-          title="尚未取得可用的 clean image"
-          description="請先回到上傳頁完成預處理，這裡才會出現可以框選的乾淨圖檔。"
+          title="還沒有可以框選的考卷"
+          description="請先到「上傳試卷」完成去手寫處理，乾淨的考卷會自動帶到這裡。"
           actions={<Button size="sm" onClick={() => navigate('/upload')}>前往上傳頁</Button>}
         />
       )}
@@ -36,13 +53,13 @@ export default function Edit() {
       {selectedEditImage && (
         <NoticeBanner
           tone={currentPaperId ? 'success' : 'info'}
-          title={currentPaperId ? `已連結後端 paper id｜目前使用${sourceLabel}` : `目前使用本地模式｜${sourceLabel}`}
+          title={`框選來源：${sourceLabel}（去手寫後的乾淨版）`}
           description={
             currentPaperId
-              ? `目前 paper id：${currentPaperId}，新增裁切時會優先送往後端取得標籤。若這張圖不適合框選，可以回上傳頁切換版本。`
-              : `目前已建立 ${crops.length} 題裁切，但還沒連到正式 paper id。`
+              ? '加入裁切時會自動請 AI 建議分類標籤。如果想改用原始圖片框選，回上傳頁切換即可。'
+              : `已建立 ${crops.length} 題裁切（本地模式，標籤用預設建議）。`
           }
-          actions={crops.length > 0 ? <Button size="sm" onClick={() => navigate('/generate')}>前往組卷頁</Button> : null}
+          actions={crops.length > 0 ? <Button size="sm" onClick={() => navigate('/generate')}>前往組卷頁 →</Button> : null}
         />
       )}
 

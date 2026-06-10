@@ -66,15 +66,24 @@ def _normalize_document_background(gray: np.ndarray) -> np.ndarray:
 def _binarize_document(gray: np.ndarray) -> np.ndarray:
     adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 25, 12)
     _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    binary = cv2.bitwise_or(adaptive, otsu)
+    # bitwise_or = 取「兩者都認為是墨水」的交集。稀疏頁（大片空白）的
+    # Otsu 門檻會亂掉、把整頁文字判成背景 → 交集後 binary 幾乎全白，
+    # 整頁印刷字消失。Otsu 抓到的墨水比例異常低時，只信 adaptive。
+    otsu_ink_ratio = float(np.mean(otsu == 0))
+    if otsu_ink_ratio < 0.005:
+        binary = adaptive
+    else:
+        binary = cv2.bitwise_or(adaptive, otsu)
 
     open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, open_kernel, iterations=1)
 
+    # 雜點門檻 6px：再高會殺掉印刷的小數點（~9px），
+    # 殘留的微小雜訊交給後段 residual gray 濾鏡處理
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(255 - binary, connectivity=8)
     cleaned = binary.copy()
     for label in range(1, num_labels):
-        if stats[label, cv2.CC_STAT_AREA] < 15:
+        if stats[label, cv2.CC_STAT_AREA] < 6:
             cleaned[labels == label] = 255
 
     return cleaned
@@ -191,6 +200,15 @@ def _classify_components(
     text_inv_norm = (255 - original_binary).astype(np.float32) / 255.0
     density_map = cv2.GaussianBlur(text_inv_norm, (51, 51), 15)
 
+    # 稀疏頁安全閥：整頁墨水比例過低（計算題頁、答案卷）時，
+    # 「孤立」與「偏離行列」訊號都失去鑑別力 —— 整頁空曠時什麼都孤立、
+    # 稀疏的印刷行墨水量低於行投影門檻而不被承認是行。
+    # 此時寧可少擦（保內容），漏網筆跡交給互動式擦除。
+    page_ink_ratio = float(np.mean(text_inv_norm))
+    is_sparse_page = page_ink_ratio < 0.03
+    isolation_weight = 0 if is_sparse_page else 2
+    off_grid_weight = 1 if is_sparse_page else 2
+
     # 每個元件的平均灰階（vectorized：bincount 加總 / 像素數）
     flat_labels = labels.ravel()
     sums = np.bincount(flat_labels, weights=enhanced.ravel().astype(np.float64), minlength=num_labels)
@@ -220,8 +238,9 @@ def _classify_components(
             decisions[label] = {'erased': True, 'kind': 'forced', 'votes': 0, 'bbox': bbox, 'area': area}
             continue
 
-        # 小雜點直接清除（不進元件清單）
-        if area < 8:
+        # 小雜點直接清除（不進元件清單）；門檻與 _binarize_document 對齊，
+        # 不能殺掉印刷小數點（~7-9px）
+        if area < 6:
             decisions[label] = {'erased': True, 'kind': 'noise', 'votes': 0, 'bbox': bbox, 'area': area}
             continue
 
@@ -239,7 +258,10 @@ def _classify_components(
                 or (2.0 < aspect < 8.0 and cw < 60)
             )
         )
-        is_protected_shape = is_tiny_symbol or is_thin_shape
+        # 字符尺寸的低密度形狀（＋ 號是十字形，bbox 密度只有 ~0.14，
+        # 上面兩個條件都接不住）— 永不自動擦除，誤留交給互動式擦除
+        is_small_glyph = area < 60 and max(cw, ch) <= 20 and density > 0.10
+        is_protected_shape = is_tiny_symbol or is_thin_shape or is_small_glyph
 
         # 行列對齊度
         h_ratio = float(np.mean(h_in_line[y:min(y + ch, h_img)])) if ch else 0.0
@@ -252,13 +274,19 @@ def _classify_components(
         is_isolated = float(density_map[cy, cx]) < 0.05
 
         # ★ v11: 筆畫濃度（比印刷墨水基準淡很多 = 手寫鉛筆/輕壓筆跡）
-        is_faint = area >= 15 and float(mean_intensity[label]) > ink_ref + 30
+        # v11.1: 加尺寸門檻 — 印刷的小符號（＋ ＝ － 小數點）筆畫細，
+        # 反鋸齒會讓平均灰階偏淡，不加門檻會被誤判成淡筆跡擦掉
+        is_faint = (
+            area >= 60
+            and max(cw, ch) >= 25
+            and float(mean_intensity[label]) > ink_ref + 30
+        )
 
         votes = 0
         if is_off_grid:
-            votes += 2
+            votes += off_grid_weight
         if is_isolated:
-            votes += 2
+            votes += isolation_weight
         if is_faint:
             votes += 2
         if density < 0.2:
@@ -436,13 +464,15 @@ def _build_ocr_clean_image(gray: np.ndarray, binary: np.ndarray) -> np.ndarray:
     text_mask = cv2.bitwise_not(binary)
     text_mask = cv2.dilate(text_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)), iterations=1)
 
+    # 過濾條件不能太兇：小數點 ~9px、等號橫槓 aspect ~8-10，
+    # 砍掉會讓數學題無法判讀（v11.1 從 area<18 / aspect 12 放寬）
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(text_mask, connectivity=8)
     for label in range(1, num_labels):
         area = stats[label, cv2.CC_STAT_AREA]
         width = stats[label, cv2.CC_STAT_WIDTH]
         height = max(stats[label, cv2.CC_STAT_HEIGHT], 1)
         aspect = width / height
-        if area < 18 or aspect > 12 or aspect < 0.08:
+        if area < 6 or aspect > 25 or aspect < 0.04:
             text_mask[labels == label] = 0
 
     base = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
