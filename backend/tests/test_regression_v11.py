@@ -31,6 +31,11 @@ OP_GAP_XS = (568, 592, 616)  # 該行這幾個 x 不畫黑塊，留給符號
 OP_PLUS_ROI = (568, 242, 14, 14)
 OP_EQ_ROI = (592, 243, 14, 12)
 OP_DOT_ROI = (618, 250, 4, 4)
+# 聯立方程式大括號（跨兩行的高瘦曲線）— BUG-R7 的受測對象
+BRACE_ROI = (72, 100, 16, 92)
+# 紅筆劃過印刷字 — BUG-R8 的受測對象
+REDPEN_PRINT_ROI = (820, 380, 30, 20)   # 被紅線劃過的黑色印刷塊
+REDPEN_ONLY_ROI = (856, 370, 40, 14)    # 純紅筆段（必須被清除）
 
 
 # cv2.imread/imwrite 在 CJK 路徑（C:\Users\強哥\...\pytest-of-強哥）會靜默失敗，
@@ -68,6 +73,19 @@ def synthetic_paper(tmp_path_factory):
     cv2.line(img, (ex, ey + 9), (ex + 13, ey + 9), (90, 90, 90), 2)
     dx, dy = OP_DOT_ROI[0], OP_DOT_ROI[1]
     cv2.rectangle(img, (dx, dy), (dx + 3, dy + 3), (60, 60, 60), -1)
+    # 聯立方程式大括號：跨第 1、2 行的高瘦曲線（印刷）
+    bx, by = BRACE_ROI[0], BRACE_ROI[1]
+    brace_pts = np.array([
+        (bx + 13, by), (bx + 5, by + 12), (bx + 5, by + 36),
+        (bx, by + 46), (bx + 5, by + 56), (bx + 5, by + 80), (bx + 13, by + 90),
+    ], dtype=np.int32)
+    cv2.polylines(img, [brace_pts], False, (10, 10, 10), 2)
+    # 紅筆劃過印刷字：黑色印刷塊 + 紅線（與印刷重疊處混色成暗紅）
+    rx, ry, rw2, rh2 = REDPEN_PRINT_ROI
+    cv2.rectangle(img, (rx, ry), (rx + rw2, ry + rh2), (10, 10, 10), -1)
+    cv2.line(img, (rx - 20, ry + 26), (rx + rw2 + 46, ry - 8), (40, 40, 220), 4)  # 純紅段
+    # 與印刷塊重疊的線段手動畫成暗紅（模擬墨水混色，V 低）
+    cv2.line(img, (rx + 2, ry + 14), (rx + rw2 - 2, ry + 4), (25, 25, 70), 4)
     path = tmp_path_factory.mktemp('data') / 'synthetic.png'
     imwrite_u(path, img)
     return path
@@ -199,6 +217,30 @@ def test_bug_r6_math_operators_preserved(synthetic_paper, tmp_path):
     for name, roi in [('plus', OP_PLUS_ROI), ('equals', OP_EQ_ROI), ('dot', OP_DOT_ROI)]:
         area = roi_pixels(gray, roi)
         assert float(area.min()) < 180, f'印刷符號 {name} 被擦掉了（BUG-R6 再發）'
+
+
+def test_bug_r7_brace_preserved(synthetic_paper, tmp_path):
+    """BUG-R7：聯立方程式的大括號（跨行高瘦曲線）不得被擦除
+
+    大括號跨兩行 → 行投影判它 off-grid；高瘦 → 極端長寬比 +1 票。
+    2026-06-12 用戶回報聯立方程式左側大括號消失。
+    """
+    _, gray = run_cleanup(synthetic_paper, tmp_path, 'brace')
+    area = roi_pixels(gray, BRACE_ROI)
+    assert float(area.min()) < 180, '大括號被擦掉了（BUG-R7 再發）'
+
+
+def test_bug_r8_print_under_red_pen_kept(synthetic_paper, tmp_path):
+    """BUG-R8：紅筆劃過的印刷字必須保留（暗色像素不當色筆 inpaint）
+
+    2026-06-12 用戶回報：13/5 的 13 被紅筆遮蓋，inpaint 把印刷字一起抹掉。
+    與印刷重疊的色筆像素 V 低 → 不進 color mask；純色筆段照樣清除。
+    """
+    _, gray = run_cleanup(synthetic_paper, tmp_path, 'redpen')
+    printed = roi_pixels(gray, REDPEN_PRINT_ROI)
+    assert float(printed.min()) < 120, '被紅筆劃過的印刷塊消失了（BUG-R8 再發）'
+    red_only = roi_pixels(gray, REDPEN_ONLY_ROI)
+    assert float(red_only.mean()) > 235, '純紅筆段沒被清乾淨'
 
 
 def test_bug_r5_no_fake_progress_fallback():

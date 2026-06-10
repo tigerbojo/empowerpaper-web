@@ -15,6 +15,7 @@ import Spinner from '@/components/ui/Spinner'
  */
 export default function ComponentReviewModal({
   imageUrl,
+  originalImageUrl,
   components,
   imageWidth,
   imageHeight,
@@ -27,6 +28,9 @@ export default function ComponentReviewModal({
   const [overrides, setOverrides] = useState({})
   const [showInk, setShowInk] = useState(false)
   const [zoom, setZoom] = useState(100)
+  // 對照原始考卷：被筆跡完全蓋住的印刷內容無法自動還原，
+  // 切回原圖讓使用者判讀被遮蓋處的原始內容
+  const [compareOriginal, setCompareOriginal] = useState(false)
 
   const effective = useMemo(
     () =>
@@ -106,6 +110,17 @@ export default function ComponentReviewModal({
             />
             顯示所有筆畫（可點任何字強制擦除）
           </label>
+          {originalImageUrl && (
+            <label className="flex cursor-pointer items-center gap-1.5" title="被筆跡蓋住的印刷內容無法自動還原，切回原圖判讀">
+              <input
+                type="checkbox"
+                checked={compareOriginal}
+                onChange={(e) => setCompareOriginal(e.target.checked)}
+                className="accent-amber-400"
+              />
+              <span className={compareOriginal ? 'text-amber-300' : ''}>對照原始考卷</span>
+            </label>
+          )}
           <div className="ml-auto flex items-center gap-1">
             {[100, 150, 220, 320].map((z) => (
               <button
@@ -126,7 +141,12 @@ export default function ComponentReviewModal({
         {/* Image + overlay */}
         <div className="flex-1 overflow-auto rounded-2xl border border-white/10 bg-white p-2">
           <div className="relative" style={{ width: `${zoom}%` }}>
-            <img src={imageUrl} alt="cleaned preview" className="block w-full select-none" draggable={false} />
+            <img
+              src={compareOriginal && originalImageUrl ? originalImageUrl : imageUrl}
+              alt={compareOriginal ? 'original preview' : 'cleaned preview'}
+              className="block w-full select-none"
+              draggable={false}
+            />
             {imageWidth > 0 && imageHeight > 0 && (
               <svg
                 className="absolute inset-0 h-full w-full"

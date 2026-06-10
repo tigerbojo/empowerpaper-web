@@ -827,6 +827,7 @@ export default function Upload() {
       {reviewOpen && serverBaseRef.current && components && (
         <ComponentReviewModal
           imageUrl={serverBaseRef.current}
+          originalImageUrl={usePaperStore.getState().originalImage}
           components={components}
           imageWidth={imageDims.width}
           imageHeight={imageDims.height}

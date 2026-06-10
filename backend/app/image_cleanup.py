@@ -11,7 +11,7 @@ from .schemas import CleanupMode, CleanupProcessor
 
 # 擦除管線版本 — 進 cache key。演算法有感變更時 bump，
 # 否則舊的 cleaned cache 會把修復前的結果一直吐給使用者
-PIPELINE_VERSION = 'v114'
+PIPELINE_VERSION = 'v115'
 
 
 @dataclass
@@ -48,6 +48,12 @@ def _remove_colored_marks(image: np.ndarray) -> np.ndarray:
     red_mask_1 = cv2.inRange(hsv, np.array([0, 35, 40]), np.array([12, 255, 255]))
     red_mask_2 = cv2.inRange(hsv, np.array([160, 35, 40]), np.array([179, 255, 255]))
     color_mask = cv2.bitwise_or(blue_mask, cv2.bitwise_or(red_mask_1, red_mask_2))
+
+    # 很暗的像素不當色筆：印刷墨水被色筆劃過時混色成暗紅/暗藍（V 低），
+    # 底下是原題內容 — inpaint 它會把被遮的印刷字一起抹掉、無法判讀。
+    # 保留暗像素，殘餘色暈交給後段灰階管線清理。
+    dark_ink = hsv[:, :, 2] < 80
+    color_mask[dark_ink] = 0
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     color_mask = cv2.dilate(color_mask, kernel, iterations=1)
@@ -265,7 +271,16 @@ def _classify_components(
         # 字符尺寸的低密度形狀（＋ 號是十字形，bbox 密度只有 ~0.14，
         # 上面兩個條件都接不住）— 永不自動擦除，誤留交給互動式擦除
         is_small_glyph = area < 60 and max(cw, ch) <= 20 and density > 0.10
-        is_protected_shape = is_tiny_symbol or is_thin_shape or is_small_glyph
+        # 高瘦的低密度形狀 = 聯立方程式大括號 / 长括号 / 積分號。
+        # 跨兩行所以行投影會判它 off-grid，必須獨立保護。
+        # density < 0.6 排除「實心直線」（手寫刪除線、表格線交給其他機制）
+        is_tall_bracket = (
+            aspect < 0.22
+            and 40 <= ch <= 220
+            and density < 0.6
+            and area < 2500
+        )
+        is_protected_shape = is_tiny_symbol or is_thin_shape or is_small_glyph or is_tall_bracket
 
         # 行列對齊度
         h_ratio = float(np.mean(h_in_line[y:min(y + ch, h_img)])) if ch else 0.0
