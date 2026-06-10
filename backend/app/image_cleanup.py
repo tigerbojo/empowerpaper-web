@@ -11,7 +11,7 @@ from .schemas import CleanupMode, CleanupProcessor
 
 # 擦除管線版本 — 進 cache key。演算法有感變更時 bump，
 # 否則舊的 cleaned cache 會把修復前的結果一直吐給使用者
-PIPELINE_VERSION = 'v12'
+PIPELINE_VERSION = 'v12d'
 
 
 @dataclass
@@ -285,6 +285,21 @@ def _classify_components(
     centers_y = stats[:, cv2.CC_STAT_TOP] + stats[:, cv2.CC_STAT_HEIGHT] // 2
     areas_all = stats[:, cv2.CC_STAT_AREA]
 
+    # ★ v12-D: 版面先驗 — 文字欄起始線。台灣考卷學生答案常用鉛筆寫在
+    # 題號「左側的 margin」；褪色影印卷上鉛筆與印刷的濃度/紋理完全不可分，
+    # 唯一可靠的訊號是位置：印刷每行的起始 x 高度一致（題號/選項欄位），
+    # 起始線左外側的元件 = 手寫答案。
+    # 取每個文字行最左元件 x 的全頁中位數當欄位起始線；
+    # 被答案拉偏的行是少數，中位數不受影響。
+    row_x0: dict[int, int] = {}
+    for label in range(1, num_labels):
+        r = comp_row.get(label, -1)
+        if r >= 0 and stats[label, cv2.CC_STAT_AREA] >= 15:
+            x_ = int(stats[label, cv2.CC_STAT_LEFT])
+            if r not in row_x0 or x_ < row_x0[r]:
+                row_x0[r] = x_
+    column_x0 = float(np.median(list(row_x0.values()))) if len(row_x0) >= 5 else -1.0
+
     decisions: dict[int, dict] = {}
 
     for label in range(1, num_labels):
@@ -379,6 +394,14 @@ def _classify_components(
             if int(np.count_nonzero(inside)) >= 1:
                 is_oversized = False
 
+        # ★ v12-D: 在欄位起始線左外側（margin 區）的元件 = 手寫答案。
+        # 右緣完整落在起始線左側、且尺寸是字母級（非雜點）才算
+        is_margin = (
+            column_x0 > 0
+            and area >= 40
+            and (x + cw) < column_x0 - 8
+        )
+
         votes = 0
         if is_off_grid:
             votes += off_grid_weight
@@ -387,6 +410,8 @@ def _classify_components(
         if is_faint:
             votes += 2
         if is_colored:
+            votes += 2
+        if is_margin:
             votes += 2
         if is_oversized:
             votes += 1
@@ -410,7 +435,8 @@ def _classify_components(
             decisions[label] = {'erased': False, 'kind': kind, 'votes': votes, 'bbox': bbox, 'area': area}
             continue
 
-        if votes >= 2 and not is_protected_shape:
+        # 形狀保護不適用於 margin 區（欄位起始線外不會有印刷小符號）
+        if votes >= 2 and (not is_protected_shape or is_margin):
             decisions[label] = {'erased': True, 'kind': 'removed', 'votes': votes, 'bbox': bbox, 'area': area}
         else:
             kind = 'candidate' if votes >= 1 else 'ink'

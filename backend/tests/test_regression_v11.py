@@ -33,7 +33,11 @@ OP_PLUS_ROI = (580, 242, 14, 14)
 OP_EQ_ROI = (604, 243, 14, 12)
 OP_DOT_ROI = (630, 250, 4, 4)
 # 聯立方程式大括號（跨兩行的高瘦曲線）— BUG-R7 的受測對象
-BRACE_ROI = (72, 100, 16, 92)
+# 必須放在「行內」（欄位起始線右側）：真實考卷的大括號在方程式左側但
+# 仍在文字欄內；margin 區（起始線左外側）的東西本來就該被擦
+BRACE_GAP_ROWS = (100, 170)
+BRACE_GAP_XS = (292, 316)
+BRACE_ROI = (296, 100, 16, 92)
 # 紅筆劃過印刷字 — BUG-R8 的受測對象
 REDPEN_PRINT_ROI = (820, 380, 30, 20)   # 被紅線劃過的黑色印刷塊
 REDPEN_ONLY_ROI = (856, 370, 40, 14)    # 純紅筆段（必須被清除）
@@ -41,6 +45,8 @@ REDPEN_ONLY_ROI = (856, 370, 40, 14)    # 純紅筆段（必須被清除）
 PALE_ROW_Y = 450
 PALE_GAP_XS = (508, 532)
 PALE_PEN_ROI = (502, 452, 44, 16)
+# margin 鉛筆答案（欄位起始線 x=100 左外側、深色、on-grid）— v12-D margin 票受測
+MARGIN_PEN_ROI = (36, 518, 26, 24)
 
 
 # cv2.imread/imwrite 在 CJK 路徑（C:\Users\強哥\...\pytest-of-強哥）會靜默失敗，
@@ -65,6 +71,8 @@ def synthetic_paper(tmp_path_factory):
             if y == OP_ROW_Y and x in OP_GAP_XS:
                 continue
             if y == PALE_ROW_Y and x in PALE_GAP_XS:
+                continue
+            if y in BRACE_GAP_ROWS and x in BRACE_GAP_XS:
                 continue
             cv2.rectangle(img, (x, y), (x + 12, y + 16), (10, 10, 10), -1)
     # 手寫：深色粗斜線（off-grid + 孤立 → 必被投票擦除）
@@ -97,6 +105,12 @@ def synthetic_paper(tmp_path_factory):
     # 飽和度 ~25 低於 HSV inpaint 門檻 → 只有 v12 彩度票能抓）
     pxx, pyy = PALE_PEN_ROI[0], PALE_PEN_ROI[1]
     cv2.line(img, (pxx + 4, pyy + 12), (pxx + 40, pyy + 3), (200, 185, 178), 4)
+    # margin 鉛筆答案：深色「A」字形，寫在欄位起始線左外側的文字行上
+    # （褪色影印卷情境：濃度/彩度/紋理全部無效，只剩位置訊號）
+    mx, my = MARGIN_PEN_ROI[0], MARGIN_PEN_ROI[1]
+    cv2.line(img, (mx + 12, my + 2), (mx + 3, my + 22), (70, 70, 70), 3)
+    cv2.line(img, (mx + 12, my + 2), (mx + 21, my + 22), (70, 70, 70), 3)
+    cv2.line(img, (mx + 7, my + 14), (mx + 17, my + 14), (70, 70, 70), 2)
     path = tmp_path_factory.mktemp('data') / 'synthetic.png'
     imwrite_u(path, img)
     return path
@@ -266,6 +280,17 @@ def test_v12_pale_colored_pen_erased(synthetic_paper, tmp_path):
     _, gray = run_cleanup(synthetic_paper, tmp_path, 'palepen')
     area = roi_pixels(gray, PALE_PEN_ROI)
     assert float(area.mean()) > 235, '淡彩色筆跡沒被擦掉（v12 彩度票失效）'
+
+
+def test_v12_margin_pencil_answer_erased(synthetic_paper, tmp_path):
+    """v12-D：欄位起始線左外側的鉛筆答案必須被 margin 票擦掉
+
+    褪色影印卷上鉛筆與印刷的濃度反轉、紋理被掃描抹平、無彩度、
+    on-grid — 傳統特徵全部失效，版面位置（margin）是唯一可靠訊號。
+    """
+    _, gray = run_cleanup(synthetic_paper, tmp_path, 'marginpen')
+    area = roi_pixels(gray, MARGIN_PEN_ROI)
+    assert float(area.mean()) > 235, 'margin 鉛筆答案沒被擦掉（v12-D margin 票失效）'
 
 
 def test_bug_r5_no_fake_progress_fallback():
