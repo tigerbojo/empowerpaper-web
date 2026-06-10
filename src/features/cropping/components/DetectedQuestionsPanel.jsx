@@ -1,50 +1,64 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import Button from '@/components/ui/Button'
+
+// 相鄰框用不同顏色描邊才分得開；半透明填色會疊成一片看不出邊界
+const PALETTE = ['#22d3ee', '#f59e0b', '#a78bfa', '#34d399', '#f472b6', '#fb923c']
 
 /**
  * 顯示 AI 偵測到的題目 bbox（normalized 0~1）
- * 用 SVG 疊在縮圖上，每個框可點擊
  *
- * props:
- *   imageUrl: string                                    - 整張考卷圖
- *   boxes: [{ q_num, x, y, w, h, confidence }]         - normalized
- *   provider: 'ollama' | 'gemini'
- *   onAddOne: (box) => void
- *   onAddAll: () => void
- *   onClear: () => void
+ * 設計原則（2026-06-12 重做）：
+ * - 預設「只有描邊、無填色」，內容看得一清二楚
+ * - 題號標籤貼在自己的框左上角內側，顏色與框一致
+ * - hover 才出現淡填色 + 加粗，明確知道點下去是哪一題
+ * - 加入過的框變綠 ✓ 且不可再點，避免重複加入
  */
 export default function DetectedQuestionsPanel({ imageUrl, boxes, provider, onAddOne, onAddAll, onClear }) {
-  const containerRef = useRef(null)
-  const imgRef = useRef(null)
   const [hover, setHover] = useState(null)
+  const [added, setAdded] = useState(() => new Set())
   const [imgReady, setImgReady] = useState(false)
 
   useEffect(() => {
     setImgReady(false)
+    setAdded(new Set())
   }, [imageUrl])
 
   if (!boxes || boxes.length === 0) return null
 
+  const colorOf = (idx) => PALETTE[idx % PALETTE.length]
+
+  const handleAddOne = (b, idx) => {
+    if (added.has(idx)) return
+    setAdded((prev) => new Set(prev).add(idx))
+    onAddOne(b, idx)
+  }
+
+  const handleAddAll = () => {
+    setAdded(new Set(boxes.map((_, idx) => idx)))
+    onAddAll()
+  }
+
   return (
     <div className="rounded-[24px] border border-cyan-300/30 bg-cyan-300/5 p-4">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-sm font-semibold text-cyan-100">
-            AI 偵測到 {boxes.length} 題
+            AI 偵測到 {boxes.length} 題{added.size > 0 ? `（已加入 ${added.size}）` : ''}
           </div>
           <div className="text-[11px] text-cyan-200/70">
-            模型：{provider === 'ollama' ? '本地 Gemma 4 26B' : 'Gemini 2.5 Flash'}　點任一框 → 加入單題　或一鍵全部加入
+            模型：{provider === 'ollama' ? '本地 Gemma 4 26B' : 'Gemini 2.5 Flash'}　滑過框會亮起，點一下加入該題；框不準的題目改用下方手動框選
           </div>
         </div>
         <div className="flex gap-2">
           <Button size="sm" variant="secondary" onClick={onClear}>清除框</Button>
-          <Button size="sm" onClick={onAddAll}>全部加入 ({boxes.length})</Button>
+          <Button size="sm" onClick={handleAddAll} disabled={added.size === boxes.length}>
+            全部加入 ({boxes.length})
+          </Button>
         </div>
       </div>
 
-      <div ref={containerRef} className="relative mx-auto max-w-3xl overflow-hidden rounded-2xl border border-white/10 bg-slate-950/50">
+      <div className="relative mx-auto max-w-4xl overflow-hidden rounded-2xl border border-white/10 bg-white">
         <img
-          ref={imgRef}
           src={imageUrl}
           alt="detected questions"
           className="block w-full"
@@ -58,54 +72,53 @@ export default function DetectedQuestionsPanel({ imageUrl, boxes, provider, onAd
           >
             {boxes.map((b, idx) => {
               const isHover = hover === idx
+              const isAdded = added.has(idx)
+              const color = isAdded ? '#22c55e' : colorOf(idx)
               return (
-                <g
+                <rect
                   key={idx}
+                  x={b.x}
+                  y={b.y}
+                  width={b.w}
+                  height={b.h}
+                  rx={0.004}
+                  fill={isHover && !isAdded ? `${color}26` : 'transparent'}
+                  stroke={color}
+                  strokeWidth={isHover ? 3 : isAdded ? 1 : 2}
+                  strokeDasharray={isAdded ? '4 3' : 'none'}
+                  vectorEffect="non-scaling-stroke"
+                  style={{ cursor: isAdded ? 'default' : 'pointer', pointerEvents: 'all' }}
                   onMouseEnter={() => setHover(idx)}
                   onMouseLeave={() => setHover(null)}
-                  onClick={() => onAddOne(b, idx)}
-                  style={{ cursor: 'pointer' }}
+                  onClick={() => handleAddOne(b, idx)}
                 >
-                  <rect
-                    x={b.x}
-                    y={b.y}
-                    width={b.w}
-                    height={b.h}
-                    fill={isHover ? 'rgba(34, 211, 238, 0.30)' : 'rgba(34, 211, 238, 0.12)'}
-                    stroke="#22d3ee"
-                    strokeWidth="0.003"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  {/* 題號標籤背景 */}
-                  <rect
-                    x={b.x}
-                    y={Math.max(0, b.y - 0.025)}
-                    width={Math.min(0.06, b.w)}
-                    height="0.025"
-                    fill="#22d3ee"
-                  />
-                </g>
+                  <title>{added.has(idx) ? `第 ${b.q_num} 題已加入` : `點擊加入第 ${b.q_num} 題`}</title>
+                </rect>
               )
             })}
           </svg>
         )}
 
-        {/* 題號文字 — 用絕對定位的 div（SVG text 在百分比 viewBox 下不好讀） */}
-        {imgReady && containerRef.current && (
+        {/* 題號標籤：貼在自己框的左上角內側，顏色與框一致 */}
+        {imgReady && (
           <div className="pointer-events-none absolute inset-0">
-            {boxes.map((b, idx) => (
-              <div
-                key={`label-${idx}`}
-                className="absolute rounded bg-cyan-400 px-1 text-[10px] font-bold text-slate-900"
-                style={{
-                  left: `${b.x * 100}%`,
-                  top: `${Math.max(0, b.y * 100 - 2.2)}%`,
-                  transform: 'translateY(0)',
-                }}
-              >
-                {b.q_num}
-              </div>
-            ))}
+            {boxes.map((b, idx) => {
+              const isAdded = added.has(idx)
+              return (
+                <div
+                  key={`label-${idx}`}
+                  className="absolute rounded-br-md px-1.5 py-0.5 text-[11px] font-bold leading-tight text-white shadow"
+                  style={{
+                    left: `${b.x * 100}%`,
+                    top: `${b.y * 100}%`,
+                    backgroundColor: isAdded ? '#22c55e' : colorOf(idx),
+                    opacity: hover === idx ? 1 : 0.92,
+                  }}
+                >
+                  {isAdded ? `✓ ${b.q_num}` : b.q_num}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

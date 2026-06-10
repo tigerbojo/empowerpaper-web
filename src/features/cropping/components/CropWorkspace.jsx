@@ -36,7 +36,19 @@ export default function CropWorkspace() {
   const [isDetecting, setIsDetecting] = useState(false)
   const [detectedBoxes, setDetectedBoxes] = useState([])
   const [detectProvider, setDetectProvider] = useState(null)
+  // 拖曳模式：crop = 拖出框選、move = 拖動畫面（縮放後平移用）
+  const [dragMode, setDragMode] = useState('crop')
   const { saveCropWithSuggestions } = useCropActions()
+
+  const switchDragMode = (mode) => {
+    setDragMode(mode)
+    cropperRef.current?.cropper?.setDragMode(mode)
+  }
+  const zoomBy = (delta) => cropperRef.current?.cropper?.zoom(delta)
+  const resetView = () => {
+    cropperRef.current?.cropper?.reset()
+    switchDragMode('crop')
+  }
 
   const canCrop = Boolean(selectedEditImage)
   const sourceLabel = selectedEditImageKind === 'original'
@@ -243,18 +255,47 @@ export default function CropWorkspace() {
         <div className="overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/45 p-3">
           {canCrop ? (
             <>
-              <div className="mb-3 rounded-2xl border border-cyan-200/10 bg-cyan-300/5 px-3 py-2 text-xs text-cyan-100">
-                目前框選來源：{sourceLabel}
+              {/* 操作工具列：拖曳模式 + 縮放 */}
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-2xl border border-white/10 bg-slate-900/60 px-3 py-2">
+                <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-slate-950/60 p-0.5">
+                  <button
+                    onClick={() => switchDragMode('crop')}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                      dragMode === 'crop' ? 'bg-cyan-400/25 text-cyan-200' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="拖曳直接拉出新的框"
+                  >
+                    ⬚ 框選
+                  </button>
+                  <button
+                    onClick={() => switchDragMode('move')}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                      dragMode === 'move' ? 'bg-cyan-400/25 text-cyan-200' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="拖曳移動畫面（放大後找位置用）"
+                  >
+                    ✋ 移動
+                  </button>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => zoomBy(-0.25)} className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1 text-sm text-slate-300 hover:bg-white/10" title="縮小">−</button>
+                  <button onClick={resetView} className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300 hover:bg-white/10" title="重設檢視">重設</button>
+                  <button onClick={() => zoomBy(0.25)} className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1 text-sm text-slate-300 hover:bg-white/10" title="放大">+</button>
+                </div>
+                <span className="ml-auto hidden text-[11px] text-slate-500 md:inline">
+                  滾輪縮放・雙擊圖片快速切換框選/移動・來源：{sourceLabel}
+                </span>
               </div>
               <Cropper
                 src={selectedEditImage}
                 className="h-[620px] w-full"
-                initialAspectRatio={4 / 3}
                 guides
                 viewMode={1}
+                dragMode="crop"
                 background={false}
                 responsive
-                autoCropArea={0.5}
+                autoCropArea={0.4}
+                wheelZoomRatio={0.2}
                 checkOrientation={false}
                 ref={cropperRef}
               />
