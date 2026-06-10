@@ -26,16 +26,21 @@ from app.image_cleanup import cleanup_exam_image_opencv  # noqa: E402
 PRINT_ROWS = range(100, 620, 70)
 HW_ROI = (700, 700, 160, 110)  # x, y, w, h — 文字網格下方的孤立區
 # 印刷數學符號（+ / = / 小數點），放在文字行中段的空隙 — BUG-R6 的受測對象
+# 注意：黑塊格點是 x = 100 + 24k，空隙必須選真正的格點值
 OP_ROW_Y = 240
-OP_GAP_XS = (568, 592, 616)  # 該行這幾個 x 不畫黑塊，留給符號
-OP_PLUS_ROI = (568, 242, 14, 14)
-OP_EQ_ROI = (592, 243, 14, 12)
-OP_DOT_ROI = (618, 250, 4, 4)
+OP_GAP_XS = (580, 604, 628)  # 該行這幾個 x 不畫黑塊，留給符號
+OP_PLUS_ROI = (580, 242, 14, 14)
+OP_EQ_ROI = (604, 243, 14, 12)
+OP_DOT_ROI = (630, 250, 4, 4)
 # 聯立方程式大括號（跨兩行的高瘦曲線）— BUG-R7 的受測對象
 BRACE_ROI = (72, 100, 16, 92)
 # 紅筆劃過印刷字 — BUG-R8 的受測對象
 REDPEN_PRINT_ROI = (820, 380, 30, 20)   # 被紅線劃過的黑色印刷塊
 REDPEN_ONLY_ROI = (856, 370, 40, 14)    # 純紅筆段（必須被清除）
+# 淡彩色筆跡（HSV 窄域抓不到、寫在文字行上 off-grid 也救不了）— v12 彩度票受測
+PALE_ROW_Y = 450
+PALE_GAP_XS = (508, 532)
+PALE_PEN_ROI = (502, 452, 44, 16)
 
 
 # cv2.imread/imwrite 在 CJK 路徑（C:\Users\強哥\...\pytest-of-強哥）會靜默失敗，
@@ -54,10 +59,12 @@ def imread_gray_u(path: Path) -> np.ndarray:
 @pytest.fixture(scope='module')
 def synthetic_paper(tmp_path_factory):
     img = np.full((900, 1200, 3), 255, np.uint8)
-    # 印刷字：每行一排小黑塊（對齊網格、密集）；符號行留空隙
+    # 印刷字：每行一排小黑塊（對齊網格、密集）；符號行/淡彩筆行留空隙
     for y in PRINT_ROWS:
         for x in range(100, 1100, 24):
             if y == OP_ROW_Y and x in OP_GAP_XS:
+                continue
+            if y == PALE_ROW_Y and x in PALE_GAP_XS:
                 continue
             cv2.rectangle(img, (x, y), (x + 12, y + 16), (10, 10, 10), -1)
     # 手寫：深色粗斜線（off-grid + 孤立 → 必被投票擦除）
@@ -86,6 +93,10 @@ def synthetic_paper(tmp_path_factory):
     cv2.line(img, (rx - 20, ry + 26), (rx + rw2 + 46, ry - 8), (40, 40, 220), 4)  # 純紅段
     # 與印刷塊重疊的線段手動畫成暗紅（模擬墨水混色，V 低）
     cv2.line(img, (rx + 2, ry + 14), (rx + rw2 - 2, ry + 4), (25, 25, 70), 4)
+    # 淡藍筆跡寫在文字行的空隙（on-grid、密集區 → 舊投票全失效；
+    # 飽和度 ~25 低於 HSV inpaint 門檻 → 只有 v12 彩度票能抓）
+    pxx, pyy = PALE_PEN_ROI[0], PALE_PEN_ROI[1]
+    cv2.line(img, (pxx + 4, pyy + 12), (pxx + 40, pyy + 3), (200, 185, 178), 4)
     path = tmp_path_factory.mktemp('data') / 'synthetic.png'
     imwrite_u(path, img)
     return path
@@ -216,7 +227,9 @@ def test_bug_r6_math_operators_preserved(synthetic_paper, tmp_path):
     _, gray = run_cleanup(synthetic_paper, tmp_path, 'ops')
     for name, roi in [('plus', OP_PLUS_ROI), ('equals', OP_EQ_ROI), ('dot', OP_DOT_ROI)]:
         area = roi_pixels(gray, roi)
-        assert float(area.min()) < 180, f'印刷符號 {name} 被擦掉了（BUG-R6 再發）'
+        # 符號模擬反鋸齒淡筆畫（灰 90），保留下來輸出約 200-210；
+        # 被擦掉會是 ~255。門檻 230 區分「淡但在」vs「消失」
+        assert float(area.min()) < 230, f'印刷符號 {name} 被擦掉了（BUG-R6 再發）'
 
 
 def test_bug_r7_brace_preserved(synthetic_paper, tmp_path):
@@ -241,6 +254,18 @@ def test_bug_r8_print_under_red_pen_kept(synthetic_paper, tmp_path):
     assert float(printed.min()) < 120, '被紅筆劃過的印刷塊消失了（BUG-R8 再發）'
     red_only = roi_pixels(gray, REDPEN_ONLY_ROI)
     assert float(red_only.mean()) > 235, '純紅筆段沒被清乾淨'
+
+
+def test_v12_pale_colored_pen_erased(synthetic_paper, tmp_path):
+    """v12-A：淡彩色筆跡（HSV 窄域抓不到、on-grid）必須被彩度票擦掉
+
+    使用者觀察：考卷是灰階印刷，帶彩度的筆畫必然是後加的。
+    寫在印刷文字行上的淡藍筆，off-grid/isolated/faint 全部失效，
+    只有元件彩度（相對頁面基準）能識別。
+    """
+    _, gray = run_cleanup(synthetic_paper, tmp_path, 'palepen')
+    area = roi_pixels(gray, PALE_PEN_ROI)
+    assert float(area.mean()) > 235, '淡彩色筆跡沒被擦掉（v12 彩度票失效）'
 
 
 def test_bug_r5_no_fake_progress_fallback():

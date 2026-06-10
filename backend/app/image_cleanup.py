@@ -11,7 +11,7 @@ from .schemas import CleanupMode, CleanupProcessor
 
 # 擦除管線版本 — 進 cache key。演算法有感變更時 bump，
 # 否則舊的 cleaned cache 會把修復前的結果一直吐給使用者
-PIPELINE_VERSION = 'v115'
+PIPELINE_VERSION = 'v12'
 
 
 @dataclass
@@ -182,6 +182,7 @@ def _classify_components(
     cc: tuple,
     keep_set: set[int],
     erase_set: set[int],
+    color_image: np.ndarray | None = None,
 ) -> dict[int, dict]:
     """
     v11: 元件級分類（取代 v4 _remove_gray_marks 的 in-place 清除）
@@ -233,6 +234,56 @@ def _classify_components(
         if stats[label, cv2.CC_STAT_AREA] >= 15
     ]
     ink_ref = float(np.median(ink_means)) if ink_means else 100.0
+
+    # ★ v12-A: 元件平均彩度。灰階印刷 R≈G≈B（彩度~0），帶彩度的筆畫
+    # 必然是後加的（藍筆/紅筆/螢光筆，含 HSV 窄域抓不到的淡色筆）。
+    # 用「相對頁面基準」免疫手機拍照的整體色偏。
+    # SCUT 校準：印刷 Δchroma p99=5.2、手寫 p75=39 → 門檻 8 幾乎零誤殺
+    if color_image is not None:
+        chroma = (
+            color_image.max(axis=2).astype(np.int16)
+            - color_image.min(axis=2).astype(np.int16)
+        ).astype(np.float64)
+        mean_chroma = np.bincount(flat_labels, weights=chroma.ravel(), minlength=num_labels) / counts
+        chroma_samples = [
+            mean_chroma[label]
+            for label in range(1, num_labels)
+            if stats[label, cv2.CC_STAT_AREA] >= 15
+        ]
+        chroma_base = float(np.median(chroma_samples)) if chroma_samples else 0.0
+    else:
+        mean_chroma = np.zeros(num_labels)
+        chroma_base = 0.0
+
+    # ★ v12-C: 字高規律性。印刷字高在同一行內是量化的；
+    # 高度明顯超出行中位數的元件 = 手寫嫌疑。
+    # SCUT 校準：印刷 ratio p95=1.35、手寫 p75=1.45 → 門檻 1.6
+    row_ids = np.full(h_img, -1, dtype=np.int32)
+    rid = -1
+    prev_in = 0
+    for yy in range(h_img):
+        cur = int(h_in_line[yy])
+        if cur and not prev_in:
+            rid += 1
+        row_ids[yy] = rid if cur else -1
+        prev_in = cur
+    comp_row = {}
+    row_heights: dict[int, list[int]] = {}
+    for label in range(1, num_labels):
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        ch_ = int(stats[label, cv2.CC_STAT_HEIGHT])
+        cy_ = min(y + ch_ // 2, h_img - 1)
+        r = int(row_ids[cy_])
+        comp_row[label] = r
+        if r >= 0 and stats[label, cv2.CC_STAT_AREA] >= 15:
+            row_heights.setdefault(r, []).append(ch_)
+    row_median_h = {
+        r: float(np.median(v)) for r, v in row_heights.items() if len(v) >= 4
+    }
+    # 全元件中心點（v12-C 的容器判定用）
+    centers_x = stats[:, cv2.CC_STAT_LEFT] + stats[:, cv2.CC_STAT_WIDTH] // 2
+    centers_y = stats[:, cv2.CC_STAT_TOP] + stats[:, cv2.CC_STAT_HEIGHT] // 2
+    areas_all = stats[:, cv2.CC_STAT_AREA]
 
     decisions: dict[int, dict] = {}
 
@@ -301,6 +352,33 @@ def _classify_components(
             and float(mean_intensity[label]) > ink_ref + 30
         )
 
+        # ★ v12-A: 帶彩度 = 色筆筆跡（印刷是灰階）。強訊號，
+        # 連形狀保護/圖表保護都可以蓋過（紅勾、圖上的色筆標記照樣擦）
+        is_colored = (
+            area >= 15
+            and float(mean_chroma[label]) - chroma_base > 8
+            and float(mean_chroma[label]) > 10
+        )
+
+        # ★ v12-C: 高度明顯超出同行印刷字高 = 手寫嫌疑。
+        # 例外：bbox 內包著其他元件的「容器」（題目插圖的圈圈、框住文字
+        # 的圖形）天生比行高大，不投票
+        row_of = comp_row.get(label, -1)
+        is_oversized = (
+            area >= 15
+            and row_of in row_median_h
+            and ch > 1.6 * row_median_h[row_of]
+        )
+        if is_oversized:
+            inside = (
+                (centers_x > x) & (centers_x < x + cw)
+                & (centers_y > y) & (centers_y < y + ch)
+                & (areas_all >= 15)
+            )
+            inside[label] = False
+            if int(np.count_nonzero(inside)) >= 1:
+                is_oversized = False
+
         votes = 0
         if is_off_grid:
             votes += off_grid_weight
@@ -308,6 +386,10 @@ def _classify_components(
             votes += isolation_weight
         if is_faint:
             votes += 2
+        if is_colored:
+            votes += 2
+        if is_oversized:
+            votes += 1
         if density < 0.2:
             votes += 1
         if aspect > 5 or aspect < 0.2:
@@ -319,7 +401,9 @@ def _classify_components(
             decisions[label] = {'erased': False, 'kind': 'restored', 'votes': votes, 'bbox': bbox, 'area': area}
             continue
 
-        # 圖表保護：中心點落在圖表區 → 保留，但高票元件標成 candidate 供使用者手動擦
+        # 圖表保護：中心點落在圖表區 → 保留，但高票元件標成 candidate 供使用者手動擦。
+        # 彩度票「不」蓋過保護 — 雙色印刷考卷（彩色圈圈/插圖）存在，
+        # 圖上的色筆標記寧可留給互動式擦除，不冒險誤殺印刷圖形
         in_chart = bool(chart_mask[cy, cx])
         if in_chart:
             kind = 'candidate' if votes >= 2 else 'ink'
@@ -543,6 +627,7 @@ def cleanup_exam_image_opencv(
         enhanced, original_binary, chart_mask, cc,
         keep_set=set(keep_ids or []),
         erase_set=set(erase_ids or []),
+        color_image=image,
     )
 
     labels = cc[1]
