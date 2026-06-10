@@ -98,6 +98,8 @@ export default function Upload() {
   const [imageDims, setImageDims] = useState({ width: 0, height: 0 })
   const [reviewOpen, setReviewOpen] = useState(false)
   const [reviewApplying, setReviewApplying] = useState(false)
+  // 大預覽區目前顯示的版本：original | cleaned（處理完成自動切到 cleaned）
+  const [previewTab, setPreviewTab] = useState('original')
 
   // 採用一份後端 clean 結果：更新所有 refs/state，並套用目前滑桿黑度顯示
   const adoptCleanResult = async (result) => {
@@ -121,6 +123,7 @@ export default function Upload() {
     }
     setCleanedImage(displayUrl)
     setSelectedEditImage(displayUrl, 'cleaned')
+    setPreviewTab('cleaned')
   }
 
   // PDF 選頁：每一頁都是獨立的考卷，切頁時把舊 paper 的狀態全部重置
@@ -140,6 +143,7 @@ export default function Upload() {
     bakedDarknessRef.current = 1.0
     manualEditsRef.current = false
     setRotation(0)
+    setPreviewTab('original')
     selectPdfPage(page)
     setStep(2)
   }
@@ -559,13 +563,10 @@ export default function Upload() {
               </Button>
               <Button
                 className="ml-auto"
-                disabled={!compressed || correctingUpload}
-                onClick={async () => {
-                  await handleOpenCornerAdjust()
-                  setStep(3)
-                }}
+                disabled={!compressed}
+                onClick={() => setStep(3)}
               >
-                {correctingUpload ? '準備中…' : '下一步：校正 →'}
+                下一步 →
               </Button>
             </div>
           </div>
@@ -574,26 +575,30 @@ export default function Upload() {
         {/* === Step 3: 梯形校正 === */}
         {step === 3 && (
           <div className="mt-4 space-y-3">
-            <div className="rounded-[20px] border border-white/10 bg-slate-950/40 p-4">
-              <div className="text-sm font-medium text-white">梯形校正</div>
-              <div className="mt-1 text-xs text-slate-400">
-                {cornerOpen
-                  ? '請在彈出的校正視窗中拖動 4 個角點'
-                  : '點下方按鈕打開校正工具，拖動角點框住文件邊緣'}
+            <div className="rounded-[20px] border border-cyan-400/25 bg-cyan-400/5 p-4">
+              <div className="text-sm font-medium text-white">這份考卷需要校正嗎？</div>
+              <div className="mt-1 text-xs leading-relaxed text-slate-400">
+                <span className="text-slate-300">掃描檔或 PDF 通常不需要校正</span>，直接辨識即可。
+                只有用手機「斜著拍」的照片，才需要打開校正工具拖動 4 個角點把文件拉正。
               </div>
-              <div className="mt-3">
-                <Button size="sm" onClick={() => setCornerOpen(true)}>📐 打開校正工具</Button>
-              </div>
+              <Button className="mt-3 w-full" onClick={() => { setStep(4); handleProcess(); }}>
+                ✨ 直接辨識（去除手寫）→
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2 w-full"
+                disabled={correctingUpload}
+                onClick={handleOpenCornerAdjust}
+              >
+                {correctingUpload ? '準備中…' : '📐 照片拍歪了，先校正'}
+              </Button>
+              {cornerOpen && (
+                <div className="mt-2 text-xs text-cyan-300">請在彈出的校正視窗中拖動 4 個角點</div>
+              )}
             </div>
             <div className="flex gap-2">
               <Button variant="secondary" size="sm" onClick={() => setStep(2)}>← 返回旋轉</Button>
-              <Button
-                className="ml-auto"
-                variant="secondary"
-                onClick={() => { setStep(4); handleProcess(); }}
-              >
-                跳過校正，直接辨識 →
-              </Button>
             </div>
           </div>
         )}
@@ -640,6 +645,7 @@ export default function Upload() {
                   setComponents(null)
                   setProcessError(null)
                   setRotation(0)
+                  setPreviewTab('original')
                 }}
               >
                 重新開始
@@ -650,39 +656,62 @@ export default function Upload() {
       </GlassCard>
 
       <ScanFrame>
-        <div className="rounded-[24px] bg-slate-950/30 p-4 space-y-4">
-          <div>
-            <div className="mb-2 text-sm font-medium text-slate-300">原始圖片</div>
-            {previewUrl ? (
-              <>
-                <img src={previewUrl} alt="original preview" className="max-h-[300px] w-full rounded-[22px] object-contain" />
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(-90)}>↺ 左轉</Button>
-                  <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(90)}>↻ 右轉</Button>
-                  <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(180)}>⇅ 翻轉</Button>
+        <div className="rounded-[24px] bg-slate-950/30 p-4 space-y-3">
+          {/* 預覽工具列：原始/處理後切換 + 縮放 */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-slate-900/70 p-1">
+              <button
+                onClick={() => { setPreviewTab('original'); handleZoomReset() }}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                  previewTab === 'original' || !cleanedImage
+                    ? 'bg-cyan-400/20 text-cyan-200'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                📄 原始考卷
+              </button>
+              <button
+                onClick={() => { if (cleanedImage) { setPreviewTab('cleaned'); handleZoomReset() } }}
+                disabled={!cleanedImage}
+                title={cleanedImage ? '' : '完成辨識後才能檢視'}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                  previewTab === 'cleaned' && cleanedImage
+                    ? 'bg-cyan-400/20 text-cyan-200'
+                    : cleanedImage
+                      ? 'text-slate-400 hover:text-slate-200'
+                      : 'cursor-not-allowed text-slate-600'
+                }`}
+              >
+                ✨ 處理後
+              </button>
+            </div>
+            {(previewUrl || cleanedImage) && (
+              <div className="flex items-center gap-2">
+                <span className="hidden text-[11px] text-slate-500 sm:inline">滾輪縮放・放大後可拖曳</span>
+                <div className="flex items-center gap-1">
+                  <button onClick={handleZoomOut} className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-sm text-slate-300 hover:bg-white/10" title="縮小">−</button>
+                  <button onClick={handleZoomReset} className="min-w-[52px] rounded-md border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-slate-300 hover:bg-white/10" title="重設">{Math.round(zoom * 100)}%</button>
+                  <button onClick={handleZoomIn} className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-sm text-slate-300 hover:bg-white/10" title="放大">+</button>
                 </div>
-              </>
-            ) : (
-              <div className="flex min-h-[220px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">上傳完成後，這裡會顯示原始圖片預覽。</div>
+              </div>
             )}
           </div>
 
-          <div>
-            <div className="mb-2 flex items-center justify-between">
-              <div className="text-sm font-medium text-slate-300">處理後預覽</div>
-              <div className="flex items-center gap-2">
-                {cleanedImage && (
-                  <div className="flex items-center gap-1">
-                    <button onClick={handleZoomOut} className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300 hover:bg-white/10" title="縮小">−</button>
-                    <button onClick={handleZoomReset} className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300 hover:bg-white/10 min-w-[44px]" title="重設">{Math.round(zoom * 100)}%</button>
-                    <button onClick={handleZoomIn} className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300 hover:bg-white/10" title="放大">+</button>
-                  </div>
-                )}
-              </div>
-            </div>
-            {cleanedImage ? (
+          {/* 大預覽區（占滿可視高度，看得清考卷內容） */}
+          {(() => {
+            const showCleaned = previewTab === 'cleaned' && Boolean(cleanedImage)
+            const activeImage = showCleaned ? cleanedImage : previewUrl
+            if (!activeImage) {
+              return (
+                <div className="flex h-[55vh] min-h-[380px] flex-col items-center justify-center gap-2 rounded-[22px] border border-dashed border-white/15 bg-white/5 text-slate-400">
+                  <div className="text-3xl">🗂️</div>
+                  <div className="text-sm">在左側選擇考卷照片或 PDF，這裡會顯示大圖預覽</div>
+                </div>
+              )
+            }
+            return (
               <div
-                className="relative h-[300px] sm:h-[400px] lg:h-[500px] w-full overflow-hidden rounded-[22px] border border-white/10 bg-white"
+                className="relative h-[58vh] min-h-[420px] w-full overflow-hidden rounded-[22px] border border-white/10 bg-white"
                 onWheel={handleWheel}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
@@ -691,20 +720,35 @@ export default function Upload() {
                 style={{ cursor: zoom > 1 ? (isDraggingRef.current ? 'grabbing' : 'grab') : 'default' }}
               >
                 <img
-                  src={cleanedImage}
-                  alt="cleaned preview"
+                  src={activeImage}
+                  alt={showCleaned ? 'cleaned preview' : 'original preview'}
                   draggable={false}
-                  className="h-full w-full object-contain select-none transition-transform"
+                  className="h-full w-full select-none object-contain transition-transform"
                   style={{
                     transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
                     transformOrigin: 'center center',
                   }}
                 />
+                <div className={`pointer-events-none absolute left-3 top-3 rounded-full px-3 py-1 text-xs font-medium ${
+                  showCleaned ? 'bg-emerald-500/90 text-white' : 'bg-slate-900/80 text-slate-200'
+                }`}>
+                  {showCleaned ? '✨ 處理後（已去手寫）' : '📄 原始考卷'}
+                </div>
               </div>
-            ) : (
-              <div className="flex min-h-[300px] items-center justify-center rounded-[22px] border border-white/10 bg-white/5 text-sm text-slate-400">完成處理後，這裡會顯示去除手寫、加深印刷字的乾淨版本。</div>
-            )}
+            )
+          })()}
 
+          {/* 原始檢視：旋轉工具列 */}
+          {previewUrl && (previewTab === 'original' || !cleanedImage) && (
+            <div className="flex flex-wrap items-center gap-2 rounded-[18px] border border-white/10 bg-slate-950/40 px-4 py-3">
+              <span className="text-xs text-slate-400">照片歪了？</span>
+              <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(-90)}>↺ 左轉</Button>
+              <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(90)}>↻ 右轉</Button>
+              <Button size="sm" variant="secondary" onClick={() => handleRotateOriginal(180)}>⇅ 翻轉</Button>
+            </div>
+          )}
+
+          <div>
             {cleanedImage && (
               <>
                 {components && components.length > 0 && (
