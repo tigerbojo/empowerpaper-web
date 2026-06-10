@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
 
@@ -31,6 +31,55 @@ export default function ComponentReviewModal({
   // 對照原始考卷：被筆跡完全蓋住的印刷內容無法自動還原，
   // 切回原圖讓使用者判讀被遮蓋處的原始內容
   const [compareOriginal, setCompareOriginal] = useState(false)
+  // 工具：click = 點選單一元件；box = 拖框批次擦除
+  // （框內元件全是擦除狀態時改為批次還原 — 拖同一區兩次等於 undo）
+  const [tool, setTool] = useState('click')
+  const wrapRef = useRef(null)
+  const [boxStart, setBoxStart] = useState(null)   // 影像座標
+  const [boxRect, setBoxRect] = useState(null)     // {x,y,w,h} 影像座標
+
+  const toImageCoords = (e) => {
+    const r = wrapRef.current.getBoundingClientRect()
+    return {
+      x: ((e.clientX - r.left) / r.width) * imageWidth,
+      y: ((e.clientY - r.top) / r.height) * imageHeight,
+    }
+  }
+
+  const handleBoxDown = (e) => {
+    if (tool !== 'box' || !wrapRef.current) return
+    e.preventDefault()
+    setBoxStart(toImageCoords(e))
+    setBoxRect(null)
+  }
+  const handleBoxMove = (e) => {
+    if (tool !== 'box' || !boxStart) return
+    const p = toImageCoords(e)
+    setBoxRect({
+      x: Math.min(boxStart.x, p.x),
+      y: Math.min(boxStart.y, p.y),
+      w: Math.abs(p.x - boxStart.x),
+      h: Math.abs(p.y - boxStart.y),
+    })
+  }
+  const handleBoxUp = () => {
+    if (tool !== 'box' || !boxStart) return
+    const rect = boxRect
+    setBoxStart(null)
+    setBoxRect(null)
+    if (!rect || rect.w < 5 || rect.h < 5) return
+    const hits = effective.filter(
+      (c) => c.x < rect.x + rect.w && c.x + c.w > rect.x && c.y < rect.y + rect.h && c.y + c.h > rect.y,
+    )
+    if (hits.length === 0) return
+    // 框內全是已擦除 → 批次還原；否則把保留中的全部標記擦除
+    const allErased = hits.every((c) => c.erasedNow)
+    setOverrides((prev) => {
+      const next = { ...prev }
+      hits.forEach((c) => { next[c.id] = !allErased })
+      return next
+    })
+  }
 
   const effective = useMemo(
     () =>
@@ -93,6 +142,26 @@ export default function ComponentReviewModal({
 
         {/* Toolbar */}
         <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-3 text-xs text-slate-300">
+          <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-slate-900/70 p-0.5">
+            <button
+              onClick={() => setTool('click')}
+              className={`rounded-md px-2 py-1 font-medium transition ${
+                tool === 'click' ? 'bg-cyan-400/25 text-cyan-200' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="點選單一筆畫切換擦除/還原"
+            >
+              👆 點選
+            </button>
+            <button
+              onClick={() => { setTool('box'); setShowInk(true) }}
+              className={`rounded-md px-2 py-1 font-medium transition ${
+                tool === 'box' ? 'bg-amber-400/25 text-amber-200' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="拖一個方框，框內所有筆畫一次擦除（框內全是紅框時改為一次還原）"
+            >
+              ⬚ 框選擦除
+            </button>
+          </div>
           <span className="flex items-center gap-1.5">
             <span className="inline-block h-3 w-3 rounded-sm border-2 border-rose-500 bg-rose-500/20" />
             將擦除（{erasedCount}）
@@ -140,7 +209,15 @@ export default function ComponentReviewModal({
 
         {/* Image + overlay */}
         <div className="flex-1 overflow-auto rounded-2xl border border-white/10 bg-white p-2">
-          <div className="relative" style={{ width: `${zoom}%` }}>
+          <div
+            ref={wrapRef}
+            className="relative"
+            style={{ width: `${zoom}%`, cursor: tool === 'box' ? 'crosshair' : 'default' }}
+            onMouseDown={handleBoxDown}
+            onMouseMove={handleBoxMove}
+            onMouseUp={handleBoxUp}
+            onMouseLeave={handleBoxUp}
+          >
             <img
               src={compareOriginal && originalImageUrl ? originalImageUrl : imageUrl}
               alt={compareOriginal ? 'original preview' : 'cleaned preview'}
@@ -152,6 +229,7 @@ export default function ComponentReviewModal({
                 className="absolute inset-0 h-full w-full"
                 viewBox={`0 0 ${imageWidth} ${imageHeight}`}
                 preserveAspectRatio="none"
+                style={{ pointerEvents: tool === 'box' ? 'none' : 'auto' }}
               >
                 {visible.map((c) => {
                   const s = rectStyle(c)
@@ -175,6 +253,19 @@ export default function ComponentReviewModal({
                   )
                 })}
               </svg>
+            )}
+
+            {/* 框選拖曳預覽 */}
+            {boxRect && imageWidth > 0 && (
+              <div
+                className="pointer-events-none absolute border-2 border-dashed border-amber-400 bg-amber-400/15"
+                style={{
+                  left: `${(boxRect.x / imageWidth) * 100}%`,
+                  top: `${(boxRect.y / imageHeight) * 100}%`,
+                  width: `${(boxRect.w / imageWidth) * 100}%`,
+                  height: `${(boxRect.h / imageHeight) * 100}%`,
+                }}
+              />
             )}
           </div>
         </div>

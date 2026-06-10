@@ -11,7 +11,7 @@ from .schemas import CleanupMode, CleanupProcessor
 
 # 擦除管線版本 — 進 cache key。演算法有感變更時 bump，
 # 否則舊的 cleaned cache 會把修復前的結果一直吐給使用者
-PIPELINE_VERSION = 'v12d'
+PIPELINE_VERSION = 'v12e'
 
 
 @dataclass
@@ -289,16 +289,65 @@ def _classify_components(
     # 題號「左側的 margin」；褪色影印卷上鉛筆與印刷的濃度/紋理完全不可分，
     # 唯一可靠的訊號是位置：印刷每行的起始 x 高度一致（題號/選項欄位），
     # 起始線左外側的元件 = 手寫答案。
-    # 取每個文字行最左元件 x 的全頁中位數當欄位起始線；
-    # 被答案拉偏的行是少數，中位數不受影響。
-    row_x0: dict[int, int] = {}
+    # v12e 多欄支援：先用垂直投影切出欄位區塊，每欄各算自己的起始線
+    # （取該欄每行最左元件 x 的中位數；被答案拉偏的行是少數，中位數穩健），
+    # 單面雙欄考卷的右欄答案才接得住。
+    column_blocks: list[tuple[int, int]] = []  # (x_start, x_end)
+    in_run = False
+    run_start = 0
+    for xx in range(w_img + 1):
+        on = bool(v_in_line[xx]) if xx < w_img else False
+        if on and not in_run:
+            in_run = True
+            run_start = xx
+        elif not on and in_run:
+            in_run = False
+            # 與前一塊距離 < 40px 視為同一欄（行內字距造成的小縫）
+            if column_blocks and run_start - column_blocks[-1][1] < 40:
+                column_blocks[-1] = (column_blocks[-1][0], xx)
+            else:
+                column_blocks.append((run_start, xx))
+    # 只留真正的欄（寬度 >= 15% 頁寬），太窄的（裝訂線、雜訊）併入鄰欄判定
+    column_blocks = [b for b in column_blocks if b[1] - b[0] >= w_img * 0.15]
+
+    # 守門：相鄰兩塊之間必須是「貫穿整頁的白色走廊」才算真正的欄位分隔。
+    # 單欄考卷的版面空帶（圖旁留白、縮排）不會整頁淨空，會被這裡併回去，
+    # 避免把單欄誤切成雙欄、用錯的起始線誤殺行內內容。
+    ink_bool = original_binary < 128
+    merged_blocks: list[tuple[int, int]] = []
+    for blk in column_blocks:
+        if merged_blocks:
+            gap_x0, gap_x1 = merged_blocks[-1][1], blk[0]
+            if gap_x1 - gap_x0 >= 8:
+                strip_ink_rows = float(ink_bool[:, gap_x0:gap_x1].any(axis=1).mean())
+            else:
+                strip_ink_rows = 1.0
+            if strip_ink_rows > 0.10:
+                merged_blocks[-1] = (merged_blocks[-1][0], blk[1])
+                continue
+        merged_blocks.append(blk)
+    column_blocks = merged_blocks
+
+    def _column_of(cx_: int) -> int:
+        for idx, (bx0, bx1) in enumerate(column_blocks):
+            if cx_ < bx1:
+                return idx  # 在欄內或欄前的 margin 區 → 屬於這一欄
+        return len(column_blocks) - 1
+
+    col_row_x0: dict[tuple[int, int], int] = {}  # (col, row) -> 最左 x
     for label in range(1, num_labels):
         r = comp_row.get(label, -1)
         if r >= 0 and stats[label, cv2.CC_STAT_AREA] >= 15:
             x_ = int(stats[label, cv2.CC_STAT_LEFT])
-            if r not in row_x0 or x_ < row_x0[r]:
-                row_x0[r] = x_
-    column_x0 = float(np.median(list(row_x0.values()))) if len(row_x0) >= 5 else -1.0
+            c_ = _column_of(x_ + int(stats[label, cv2.CC_STAT_WIDTH]) // 2)
+            key = (c_, r)
+            if key not in col_row_x0 or x_ < col_row_x0[key]:
+                col_row_x0[key] = x_
+    column_x0_by_col: dict[int, float] = {}
+    for c_ in range(len(column_blocks)):
+        xs_ = [v for (cc_, _), v in col_row_x0.items() if cc_ == c_]
+        if len(xs_) >= 5:
+            column_x0_by_col[c_] = float(np.median(xs_))
 
     decisions: dict[int, dict] = {}
 
@@ -394,12 +443,14 @@ def _classify_components(
             if int(np.count_nonzero(inside)) >= 1:
                 is_oversized = False
 
-        # ★ v12-D: 在欄位起始線左外側（margin 區）的元件 = 手寫答案。
-        # 右緣完整落在起始線左側、且尺寸是字母級（非雜點）才算
+        # ★ v12-D/e: 在所屬欄位起始線左外側（margin 區）的元件 = 手寫答案。
+        # 右緣完整落在該欄起始線左側、且尺寸是字母級（非雜點）才算
+        comp_col = _column_of(cx) if column_blocks else -1
+        col_x0 = column_x0_by_col.get(comp_col, -1.0)
         is_margin = (
-            column_x0 > 0
+            col_x0 > 0
             and area >= 40
-            and (x + cw) < column_x0 - 8
+            and (x + cw) < col_x0 - 8
         )
 
         votes = 0
