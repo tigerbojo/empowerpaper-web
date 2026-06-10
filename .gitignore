@@ -16,3 +16,4 @@ TrainData/
 *.pth
 
 .vercel
+.gstack/

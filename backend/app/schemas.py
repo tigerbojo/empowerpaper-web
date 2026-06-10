@@ -19,6 +19,11 @@ class CleanPaperRequest(BaseModel):
     paper_id: str = Field(alias='paperId')
     mode: CleanupMode = 'auto'
     darkness: float = 1.0  # 0.5 ~ 1.5, 預設 1.0
+    # 互動式擦除：使用者覆寫（元件 id 來自上一次回傳的 components）
+    keep_ids: list[int] = Field(default_factory=list)
+    erase_ids: list[int] = Field(default_factory=list)
+    # 回傳元件清單（互動式擦除 UI 用）
+    include_components: bool = False
 
     @model_validator(mode='before')
     @classmethod
@@ -26,6 +31,17 @@ class CleanPaperRequest(BaseModel):
         if isinstance(data, dict) and 'paper_id' in data and 'paperId' not in data:
             data = {**data, 'paperId': data['paper_id']}
         return data
+
+
+class CleanComponent(BaseModel):
+    """單一連通元件（互動式擦除 UI 用，像素座標基於 cleaned image 尺寸）"""
+    id: int
+    x: int
+    y: int
+    w: int
+    h: int
+    erased: bool
+    kind: Literal['removed', 'forced', 'restored', 'candidate', 'ink']
 
 
 class CleanPaperResponse(BaseModel):
@@ -36,6 +52,9 @@ class CleanPaperResponse(BaseModel):
     ocr_image_url: str | None = None
     processor: CleanupProcessor | None = None
     requested_mode: CleanupMode = 'auto'
+    components: list[CleanComponent] | None = None
+    image_width: int | None = None
+    image_height: int | None = None
 
 
 class CleanJobResult(BaseModel):

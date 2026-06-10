@@ -7,6 +7,8 @@ import Spinner from '@/components/ui/Spinner'
 import ScanFrame from '@/features/paper-process/components/ScanFrame'
 import EraserModal from '@/features/paper-process/components/EraserModal'
 import CornerAdjustModal from '@/features/paper-process/components/CornerAdjustModal'
+import ComponentReviewModal from '@/features/paper-process/components/ComponentReviewModal'
+import { transformCleanedImage } from '@/features/paper-process/utils/imageTransform'
 import { useImageUpload } from '@/features/paper-process/hooks/useImageUpload'
 import { usePaperProcess } from '@/features/paper-process/hooks/usePaperProcess'
 import usePaperStore from '@/store/usePaperStore'
@@ -31,7 +33,6 @@ export default function Upload() {
   const navigate = useNavigate()
   const { file, error, previewUrl, compressed, isCompressing, onSelectFile, replaceCompressed } = useImageUpload()
   const [isProcessing, setIsProcessing] = useState(false)
-  const [isAdjusting, setIsAdjusting] = useState(false)
   const [step, setStep] = useState(1)
   const uploadProgress = usePaperStore((state) => state.uploadProgress)
   const uploadStage = usePaperStore((state) => state.uploadStage)
@@ -77,38 +78,60 @@ export default function Upload() {
     ]
   }, [compressed])
 
-  const simulateProcessing = async () => {
-    if (!compressed) return
-    setIsProcessing(true)
-    setUploadStage('mock-processing')
-    setProcessingStatus('processing')
-    setUploadProgress(0)
-    const checkpoints = [16, 35, 58, 77, 100]
-    for (const checkpoint of checkpoints) {
-      await new Promise((resolve) => setTimeout(resolve, 320))
-      setUploadProgress(checkpoint)
+  // 處理失敗訊息（誠實顯示錯誤 + 重試，不再用假進度條 fallback）
+  const [processError, setProcessError] = useState(null)
+  // 累積旋轉角度（純前端）
+  const [rotation, setRotation] = useState(0)
+  // 顯示管線的「基礎」圖片（橡皮擦編輯後會換成編輯結果）
+  const baseCleanedImageRef = useRef(null)
+  // 後端直出的 cleaned 圖（未旋轉、darkness=1.0，智慧擦除座標的基準）
+  const serverBaseRef = useRef(null)
+  // base 圖已含的黑度（後端直出 = 1.0；橡皮擦編輯後 = 編輯當下的黑度）
+  const bakedDarknessRef = useRef(1.0)
+  // 是否做過手動橡皮擦修改（智慧擦除套用會重置它們，UI 要警告）
+  const manualEditsRef = useRef(false)
+  // 互動式擦除元件清單
+  const [components, setComponents] = useState(null)
+  const [imageDims, setImageDims] = useState({ width: 0, height: 0 })
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [reviewApplying, setReviewApplying] = useState(false)
+
+  // 採用一份後端 clean 結果：更新所有 refs/state，並套用目前滑桿黑度顯示
+  const adoptCleanResult = async (result) => {
+    serverBaseRef.current = result.cleanedImageUrl
+    baseCleanedImageRef.current = result.cleanedImageUrl
+    bakedDarknessRef.current = 1.0
+    manualEditsRef.current = false
+    setComponents(result.components || null)
+    setImageDims({ width: result.imageWidth || 0, height: result.imageHeight || 0 })
+    setCleanedOcrImage(result.ocrImageUrl || result.cleanedImageUrl)
+    setCleanupProcessor(result.processor || 'opencv')
+    setRotation(0)
+
+    let displayUrl = result.cleanedImageUrl
+    if (Math.abs(darkness - 1.0) > 0.001) {
+      try {
+        displayUrl = await transformCleanedImage(result.cleanedImageUrl, darkness, 1.0, 0)
+      } catch {
+        displayUrl = result.cleanedImageUrl
+      }
     }
-    setCleanedImage(previewUrl)
-    setCleanedOcrImage(previewUrl)
-    setSelectedEditImage(previewUrl, 'original')
-    setCleanupProcessor('opencv')
-    setProcessingStatus('completed')
-    setUploadStage('completed')
-    setCurrentPaperId('mock-paper')
-    setCurrentJobId('mock-job')
-    setIsProcessing(false)
+    setCleanedImage(displayUrl)
+    setSelectedEditImage(displayUrl, 'cleaned')
   }
 
   const handleProcess = async () => {
     if (!compressed) return
 
     setIsProcessing(true)
+    setProcessError(null)
     setProcessingStatus('uploading')
     setUploadStage('uploading')
     setUploadProgress(0)
     setCleanupProcessor(null)
     setCleanedImage(null)
     setCleanedOcrImage(null)
+    setComponents(null)
 
     try {
       const uploadResult = await uploadMutation.mutateAsync({
@@ -124,46 +147,29 @@ export default function Upload() {
       if (uploadResult.paperId) setCurrentPaperId(uploadResult.paperId)
       if (uploadResult.originalImageUrl) setOriginalImage(uploadResult.originalImageUrl)
 
-      if (uploadResult.cleanedImageUrl) {
-        setCleanedImage(uploadResult.cleanedImageUrl)
-        setCleanedOcrImage(uploadResult.ocrImageUrl || uploadResult.cleanedImageUrl)
-        setSelectedEditImage(uploadResult.cleanedImageUrl, 'cleaned')
-        setCleanupProcessor(uploadResult.processor || 'opencv')
-        setUploadProgress(100)
-        setProcessingStatus('completed')
-        setUploadStage('completed')
-        pushToast({ tone: 'success', title: '預處理完成', description: `後端已直接回傳雙預覽（模式：${uploadResult.processor || cleanupMode}）。` })
-        setIsProcessing(false)
-        return
-      }
-
       setUploadStage('cleaning')
       setProcessingStatus('processing')
       setUploadProgress(55)
 
+      // 後端永遠只算 darkness=1.0 的基準圖；滑桿黑度由前端即時套用
       const cleanResult = await cleanMutation.mutateAsync({
         paperId: uploadResult.paperId,
         paper_id: uploadResult.paperId,
         mode: cleanupMode,
-        darkness,
+        darkness: 1.0,
+        include_components: true,
       })
 
       const activeJobId = cleanResult.jobId || uploadResult.jobId
       if (activeJobId) setCurrentJobId(activeJobId)
 
       if (cleanResult.cleanedImageUrl) {
-        setCleanedImage(cleanResult.cleanedImageUrl)
-        setCleanedOcrImage(cleanResult.ocrImageUrl || cleanResult.cleanedImageUrl)
-        setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
-        setCleanupProcessor(cleanResult.processor || 'opencv')
+        await adoptCleanResult(cleanResult)
         setUploadProgress(100)
         setProcessingStatus('completed')
         setUploadStage('completed')
-        lastProcessedDarkness.current = darkness
-        baseCleanedImageRef.current = cleanResult.cleanedImageUrl
-        setRotation(0)
         setStep(4)
-        pushToast({ tone: 'success', title: '辨識完成', description: '可以拖動下方滑桿微調印刷字深淺。' })
+        pushToast({ tone: 'success', title: '辨識完成', description: '可用「智慧擦除」檢查結果、拖滑桿即時調整深淺。' })
         setIsProcessing(false)
         return
       }
@@ -173,38 +179,65 @@ export default function Upload() {
         setUploadProgress(72)
         const jobResult = await pollCleanJob(activeJobId)
         if (jobResult.paperId) setCurrentPaperId(jobResult.paperId)
-        if (jobResult.cleanedImageUrl) setCleanedImage(jobResult.cleanedImageUrl)
-        if (jobResult.ocrImageUrl || jobResult.cleanedImageUrl) setCleanedOcrImage(jobResult.ocrImageUrl || jobResult.cleanedImageUrl)
-        if (jobResult.cleanedImageUrl) setSelectedEditImage(jobResult.cleanedImageUrl, 'cleaned')
-        setCleanupProcessor(jobResult.processor || 'opencv')
+        if (jobResult.cleanedImageUrl) {
+          await adoptCleanResult(jobResult)
+        }
         setUploadProgress(100)
         setProcessingStatus('completed')
         setUploadStage('completed')
-        pushToast({ tone: 'success', title: '輪詢成功', description: `FastAPI 已完成去痕跡任務（模式：${jobResult.processor || cleanupMode}）。` })
+        setStep(4)
+        pushToast({ tone: 'success', title: '辨識完成', description: `FastAPI 已完成去痕跡任務（模式：${jobResult.processor || cleanupMode}）。` })
         setIsProcessing(false)
         return
       }
 
       throw new Error('後端尚未回傳 clean image 或 job id')
     } catch (caughtError) {
-      pushToast({ tone: 'warning', title: '後端暫時無法完成處理', description: caughtError.message || '先切回本地 fallback，避免整個流程卡住。' })
-      await simulateProcessing()
+      const message = caughtError.message || '後端暫時無法完成處理'
+      setProcessError(message)
+      setProcessingStatus('failed')
+      setUploadStage('idle')
+      setIsProcessing(false)
+      pushToast({ tone: 'error', title: '處理失敗', description: message })
     }
   }
 
-  // 用 ref 追蹤上次處理過的 darkness，避免初次處理完成觸發 reprocess
-  const lastProcessedDarkness = useRef(null)
-  // 累積旋轉角度（純前端）
-  const [rotation, setRotation] = useState(0)
-  // 旋轉前的「基礎」圖片（每次重新處理或載入時更新）
-  const baseCleanedImageRef = useRef(null)
   // 橡皮擦 modal
   const [eraserOpen, setEraserOpen] = useState(false)
   const handleEraserApply = (newUrl) => {
     setCleanedImage(newUrl)
     setSelectedEditImage(newUrl, 'cleaned')
+    // 編輯結果直接成為新的 base：把當下黑度「烘焙」進去、旋轉歸零
     baseCleanedImageRef.current = newUrl
+    bakedDarknessRef.current = darkness
+    manualEditsRef.current = true
+    setRotation(0)
     setEraserOpen(false)
+  }
+
+  // 智慧擦除：套用使用者的元件級覆寫，後端重算一次
+  const handleReviewApply = async (keepIds, eraseIds) => {
+    if (!currentPaperId) return
+    setReviewApplying(true)
+    try {
+      const result = await cleanMutation.mutateAsync({
+        paperId: currentPaperId,
+        paper_id: currentPaperId,
+        mode: cleanupMode,
+        darkness: 1.0,
+        keep_ids: keepIds,
+        erase_ids: eraseIds,
+        include_components: true,
+      })
+      if (result.cleanedImageUrl) {
+        await adoptCleanResult(result)
+        pushToast({ tone: 'success', title: '已套用', description: '智慧擦除結果已更新。' })
+      }
+    } catch (err) {
+      pushToast({ tone: 'error', title: '套用失敗', description: err.message || '無法套用擦除變更' })
+    } finally {
+      setReviewApplying(false)
+    }
   }
 
   // 文件校正 modal
@@ -256,6 +289,7 @@ export default function Upload() {
   // step 4: 用 warped 後的 paper 做 cleanup（paper 已經存在 backend）
   const handleProcessFromWarped = async () => {
     setIsProcessing(true)
+    setProcessError(null)
     setProcessingStatus('processing')
     setUploadStage('cleaning')
     try {
@@ -263,20 +297,20 @@ export default function Upload() {
         paperId: currentPaperId,
         paper_id: currentPaperId,
         mode: cleanupMode,
-        darkness,
+        darkness: 1.0,
+        include_components: true,
       })
       if (cleanResult.cleanedImageUrl) {
-        setCleanedImage(cleanResult.cleanedImageUrl)
-        setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
-        baseCleanedImageRef.current = cleanResult.cleanedImageUrl
-        lastProcessedDarkness.current = darkness
-        setRotation(0)
+        await adoptCleanResult(cleanResult)
         setProcessingStatus('completed')
         setUploadStage('completed')
-        pushToast({ tone: 'success', title: '辨識完成', description: '可以拖動滑桿微調黑度。' })
+        pushToast({ tone: 'success', title: '辨識完成', description: '可用「智慧擦除」檢查結果、拖滑桿即時調整深淺。' })
       }
     } catch (err) {
-      pushToast({ tone: 'warning', title: '辨識失敗', description: err.message })
+      const message = err.message || '辨識失敗'
+      setProcessError(message)
+      setProcessingStatus('failed')
+      pushToast({ tone: 'error', title: '辨識失敗', description: message })
     } finally {
       setIsProcessing(false)
     }
@@ -314,56 +348,17 @@ export default function Upload() {
   }
   const handleMouseUp = () => { isDraggingRef.current = false }
 
-  // 旋轉圖片：用 canvas 讀原圖 → 旋轉 → toDataURL
-  const rotateImage = async (imageUrl, angleDeg) => {
-    return new Promise((resolve, reject) => {
-      const img = new Image()
-      img.crossOrigin = 'anonymous'
-      img.onload = () => {
-        const canvas = document.createElement('canvas')
-        const radians = (angleDeg * Math.PI) / 180
-        // 90/270 度時 width/height 互換
-        if (angleDeg % 180 === 0) {
-          canvas.width = img.width
-          canvas.height = img.height
-        } else {
-          canvas.width = img.height
-          canvas.height = img.width
-        }
-        const ctx = canvas.getContext('2d')
-        ctx.fillStyle = '#ffffff'
-        ctx.fillRect(0, 0, canvas.width, canvas.height)
-        ctx.translate(canvas.width / 2, canvas.height / 2)
-        ctx.rotate(radians)
-        ctx.drawImage(img, -img.width / 2, -img.height / 2)
-        canvas.toBlob((blob) => {
-          if (!blob) return reject(new Error('canvas.toBlob 失敗'))
-          resolve(URL.createObjectURL(blob))
-        }, 'image/png')
-      }
-      img.onerror = () => reject(new Error('讀取圖片失敗'))
-      img.src = imageUrl
-    })
-  }
-
-  const handleRotate = async (delta) => {
+  // 旋轉處理後的圖：只改角度，顯示由 darkness/rotation effect 統一重建
+  const handleRotate = (delta) => {
     if (!baseCleanedImageRef.current) return
-    const newAngle = (rotation + delta + 360) % 360
-    setRotation(newAngle)
-    try {
-      const rotatedUrl = await rotateImage(baseCleanedImageRef.current, newAngle)
-      setCleanedImage(rotatedUrl)
-      setSelectedEditImage(rotatedUrl, 'cleaned')
-    } catch (err) {
-      pushToast({ tone: 'warning', title: '旋轉失敗', description: err.message })
-    }
+    setRotation((prev) => (prev + delta + 360) % 360)
   }
 
   // 旋轉「原圖」（未處理的壓縮版），用於拍歪的照片
   const handleRotateOriginal = async (delta) => {
     if (!compressed?.previewUrl) return
     try {
-      const rotatedUrl = await rotateImage(compressed.previewUrl, (delta + 360) % 360)
+      const rotatedUrl = await transformCleanedImage(compressed.previewUrl, 1.0, 1.0, (delta + 360) % 360)
       // 把 blob URL 轉回 Blob + 尺寸，更新 compressed
       const blob = await (await fetch(rotatedUrl)).blob()
       const img = new Image()
@@ -397,54 +392,37 @@ export default function Upload() {
     }
   }
 
-  // 滑桿 debounce：停止拖動 600ms 後才送請求
+  // 黑度 + 旋轉：純前端即時重建顯示圖（LUT + canvas，不打後端）
+  // 80ms 輕量 debounce 只是避免滑桿拖動時每個 tick 都做 putImageData
   useEffect(() => {
-    if (!cleanedImage || !currentPaperId || currentPaperId === 'mock-paper') return
-    // 跟上次 reprocess 一樣 → 跳過
-    if (lastProcessedDarkness.current === darkness) return
-
-    console.log('[darkness effect triggered]', { darkness, paperId: currentPaperId, last: lastProcessedDarkness.current })
-
+    if (!baseCleanedImageRef.current) return
+    let cancelled = false
     const timer = setTimeout(async () => {
-      console.log('[reprocess start]', darkness)
-      lastProcessedDarkness.current = darkness
-      setIsAdjusting(true)
       try {
-        const cleanResult = await cleanMutation.mutateAsync({
-          paperId: currentPaperId,
-          paper_id: currentPaperId,
-          mode: cleanupMode,
+        const url = await transformCleanedImage(
+          baseCleanedImageRef.current,
           darkness,
-        })
-        console.log('[reprocess result]', cleanResult)
-
-        if (cleanResult.cleanedImageUrl) {
-          baseCleanedImageRef.current = cleanResult.cleanedImageUrl
-          // 如果有旋轉，套用旋轉後再 setCleanedImage
-          if (rotation !== 0) {
-            try {
-              const rotatedUrl = await rotateImage(cleanResult.cleanedImageUrl, rotation)
-              setCleanedImage(rotatedUrl)
-              setSelectedEditImage(rotatedUrl, 'cleaned')
-            } catch {
-              setCleanedImage(cleanResult.cleanedImageUrl)
-              setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
-            }
-          } else {
-            setCleanedImage(cleanResult.cleanedImageUrl)
-            setSelectedEditImage(cleanResult.cleanedImageUrl, 'cleaned')
-          }
+          bakedDarknessRef.current,
+          rotation,
+        )
+        if (cancelled) {
+          URL.revokeObjectURL(url)
+          return
         }
+        setCleanedImage(url)
+        setSelectedEditImage(url, 'cleaned')
       } catch (err) {
-        console.error('[reprocess error]', err)
-        pushToast({ tone: 'warning', title: '調整失敗', description: err.message || '無法套用新的黑度設定' })
-      } finally {
-        setIsAdjusting(false)
+        if (!cancelled) {
+          pushToast({ tone: 'warning', title: '調整失敗', description: err.message || '無法套用顯示設定' })
+        }
       }
-    }, 600)
-    return () => clearTimeout(timer)
+    }, 80)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [darkness])
+  }, [darkness, rotation])
 
   const statusLabel = isCompressing
     ? '正在壓縮圖片…'
@@ -568,11 +546,19 @@ export default function Upload() {
                 <Spinner label={statusLabel} />
               </div>
             )}
+            {processError && !isProcessing && (
+              <NoticeBanner
+                tone="error"
+                title="處理失敗"
+                description={processError}
+                actions={<Button size="sm" onClick={handleProcess}>重試</Button>}
+              />
+            )}
             {cleanedImage && !isProcessing && (
               <NoticeBanner
                 tone="success"
                 title="辨識完成"
-                description="右側可以拖滑桿微調深度、旋轉、用橡皮擦微調瑕疵。"
+                description="右側可用「智慧擦除」修正誤判、拖滑桿即時調整深淺、旋轉、橡皮擦微調。"
                 actions={<Button size="sm" onClick={() => navigate('/edit')}>前往框選頁 →</Button>}
               />
             )}
@@ -588,6 +574,12 @@ export default function Upload() {
                   setCleanedImage(null)
                   setOriginalImage(null)
                   baseCleanedImageRef.current = null
+                  serverBaseRef.current = null
+                  bakedDarknessRef.current = 1.0
+                  manualEditsRef.current = false
+                  setComponents(null)
+                  setProcessError(null)
+                  setRotation(0)
                 }}
               >
                 重新開始
@@ -619,7 +611,6 @@ export default function Upload() {
             <div className="mb-2 flex items-center justify-between">
               <div className="text-sm font-medium text-slate-300">處理後預覽</div>
               <div className="flex items-center gap-2">
-                {isAdjusting && <div className="text-xs text-cyan-300">套用新黑度中…</div>}
                 {cleanedImage && (
                   <div className="flex items-center gap-1">
                     <button onClick={handleZoomOut} className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300 hover:bg-white/10" title="縮小">−</button>
@@ -656,9 +647,26 @@ export default function Upload() {
 
             {cleanedImage && (
               <>
-                <div className="mt-4 rounded-[18px] border border-white/10 bg-slate-950/40 p-4 space-y-2">
+                {components && components.length > 0 && (
+                  <div className="mt-4 rounded-[18px] border border-cyan-400/20 bg-cyan-400/5 p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm text-slate-200">🪄 智慧擦除</div>
+                      <div className="text-xs text-slate-400">
+                        已自動擦除 {components.filter((c) => c.erased).length} 處筆跡
+                      </div>
+                    </div>
+                    <div className="mt-2 text-xs text-slate-400">
+                      檢視每一處被擦掉的內容：誤刪的點一下還原、漏掉的點一下擦除。
+                    </div>
+                    <Button size="sm" className="mt-3 w-full" onClick={() => setReviewOpen(true)}>
+                      檢視擦除結果
+                    </Button>
+                  </div>
+                )}
+
+                <div className="mt-3 rounded-[18px] border border-white/10 bg-slate-950/40 p-4 space-y-2">
                   <div className="flex items-center justify-between text-sm">
-                    <span className="text-slate-300">印刷字加深</span>
+                    <span className="text-slate-300">印刷字加深（即時）</span>
                     <span className="text-cyan-300 font-mono text-xs">{darkness.toFixed(2)}x</span>
                   </div>
                   <input
@@ -709,6 +717,19 @@ export default function Upload() {
           imageUrl={cleanedImage}
           onClose={() => setEraserOpen(false)}
           onApply={handleEraserApply}
+        />
+      )}
+
+      {reviewOpen && serverBaseRef.current && components && (
+        <ComponentReviewModal
+          imageUrl={serverBaseRef.current}
+          components={components}
+          imageWidth={imageDims.width}
+          imageHeight={imageDims.height}
+          isApplying={reviewApplying}
+          onApply={handleReviewApply}
+          onClose={() => setReviewOpen(false)}
+          hasManualEdits={manualEditsRef.current}
         />
       )}
 

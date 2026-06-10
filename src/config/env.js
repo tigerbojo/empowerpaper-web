@@ -1,7 +1,8 @@
 ﻿const env = {
   appName: import.meta.env.VITE_APP_NAME || '增強智卷 EmpowerPaper',
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001/api',
-  apiTimeoutMs: Number(import.meta.env.VITE_API_TIMEOUT_MS || 30000),
+  // Cloud Run 冷啟動 + 同步清理可能超過 30 秒，預設放寬到 120 秒
+  apiTimeoutMs: Number(import.meta.env.VITE_API_TIMEOUT_MS || 120000),
   firebase: {
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
     authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',

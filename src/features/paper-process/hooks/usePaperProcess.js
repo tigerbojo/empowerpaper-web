@@ -26,6 +26,9 @@ function normalizeUploadResponse(data = {}) {
     processor: data.processor || null,
     requestedMode: data.requestedMode || data.requested_mode || null,
     status: data.status || 'uploaded',
+    components: data.components || null,
+    imageWidth: data.imageWidth || data.image_width || null,
+    imageHeight: data.imageHeight || data.image_height || null,
     raw: data,
   }
 }
@@ -75,7 +78,8 @@ export function usePaperProcess() {
     },
   })
 
-  const pollCleanJob = async (jobId, { intervalMs = 1500, maxAttempts = 20 } = {}) => {
+  // 複雜考卷在 Cloud Run cold start 下可能超過 30 秒，放寬到 2 分鐘
+  const pollCleanJob = async (jobId, { intervalMs = 1500, maxAttempts = 80 } = {}) => {
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const { data } = await paperApi.fetchCleanResult(jobId)
       const normalized = normalizeJobResponse(data)

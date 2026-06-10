@@ -15,6 +15,9 @@ class CleanupArtifacts:
     processor: CleanupProcessor
     cleaned_path: Path
     ocr_path: Path | None = None
+    components: list[dict] | None = None
+    image_width: int | None = None
+    image_height: int | None = None
 
 
 def _load_image(path: Path) -> np.ndarray:
@@ -153,70 +156,110 @@ def _detect_chart_regions(binary: np.ndarray) -> np.ndarray:
     return chart_bool
 
 
-def _remove_gray_marks(enhanced: np.ndarray, binary: np.ndarray, chart_mask: np.ndarray) -> np.ndarray:
+def _classify_components(
+    enhanced: np.ndarray,
+    original_binary: np.ndarray,
+    chart_mask: np.ndarray,
+    cc: tuple,
+    keep_set: set[int],
+    erase_set: set[int],
+) -> dict[int, dict]:
     """
-    v4: 圖表保護 + 雙向投影 + 局部密度 + 形狀特徵投票
+    v11: 元件級分類（取代 v4 _remove_gray_marks 的 in-place 清除）
 
-    核心策略：
-    - 圖表/表格/幾何圖區域內的元件直接保留，不參與手寫判定（v4 新增）
-    - 印刷字會排在規律的水平行/垂直列上 → 兩個方向同時偏離 = 手寫
-    - 印刷字密集分布 → 周圍密度低 = 孤立筆跡 = 手寫
-    - 配合形狀特徵（密度、長寬比、面積）做投票
+    對每個連通元件做投票判定，回傳 {label: decision} 字典：
+      decision = {erased: bool, kind: str, votes: int, bbox: (x,y,w,h)}
+      kind: 'removed'（自動判手寫）| 'forced'（使用者強制擦除）|
+            'restored'（使用者救回）| 'candidate'（疑似手寫但保留）|
+            'ink'（一般印刷墨水）| 'noise'（小雜點）
+
+    投票信號：
+    - 偏離印刷行列（雙向投影）= 2 票
+    - 周圍文字密度低（孤立筆跡）= 2 票
+    - ★ v11 新增：筆畫明顯比全頁印刷墨水淡（鉛筆/原子筆輕壓）= 2 票
+      —— 專治「答案寫在印刷文字行上」的填空題，行列對齊投票對它無效
+    - 形狀特徵（低密度 / 極端長寬比 / 大面積）各 1 票
+    - 細小符號與細長形（√、括號、底線）永不自動擦除（v9 rescue 移到此處）
+
+    使用者覆寫：keep_set 強制保留、erase_set 強制擦除，優先於所有投票。
     """
-    h_img, w_img = binary.shape
+    num_labels, labels, stats, _ = cc
+    h_img, w_img = original_binary.shape
 
-    # 雙向投影
-    h_in_line, v_in_line = _detect_text_grid(binary)
+    h_in_line, v_in_line = _detect_text_grid(original_binary)
 
-    # 局部密度地圖（大 kernel 平滑後的文字密度）
-    text_inv_norm = (255 - binary).astype(np.float32) / 255.0
+    text_inv_norm = (255 - original_binary).astype(np.float32) / 255.0
     density_map = cv2.GaussianBlur(text_inv_norm, (51, 51), 15)
 
-    text_inv = 255 - binary
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(text_inv, connectivity=8)
-    cleaned = binary.copy()
+    # 每個元件的平均灰階（vectorized：bincount 加總 / 像素數）
+    flat_labels = labels.ravel()
+    sums = np.bincount(flat_labels, weights=enhanced.ravel().astype(np.float64), minlength=num_labels)
+    counts = np.bincount(flat_labels, minlength=num_labels).astype(np.float64)
+    counts[counts == 0] = 1
+    mean_intensity = sums / counts
+
+    # 全頁印刷墨水的參考濃度：取「夠黑」元件的中位數（排除淡筆跡拉高基準）
+    ink_means = [
+        mean_intensity[label]
+        for label in range(1, num_labels)
+        if stats[label, cv2.CC_STAT_AREA] >= 15
+    ]
+    ink_ref = float(np.median(ink_means)) if ink_means else 100.0
+
+    decisions: dict[int, dict] = {}
 
     for label in range(1, num_labels):
-        x = stats[label, cv2.CC_STAT_LEFT]
-        y = stats[label, cv2.CC_STAT_TOP]
-        cw = stats[label, cv2.CC_STAT_WIDTH]
-        ch = stats[label, cv2.CC_STAT_HEIGHT]
-        area = stats[label, cv2.CC_STAT_AREA]
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        cw = int(stats[label, cv2.CC_STAT_WIDTH])
+        ch = int(stats[label, cv2.CC_STAT_HEIGHT])
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        bbox = (x, y, cw, ch)
 
-        # 小雜點直接清除
+        if label in erase_set:
+            decisions[label] = {'erased': True, 'kind': 'forced', 'votes': 0, 'bbox': bbox, 'area': area}
+            continue
+
+        # 小雜點直接清除（不進元件清單）
         if area < 8:
-            cleaned[labels == label] = 255
+            decisions[label] = {'erased': True, 'kind': 'noise', 'votes': 0, 'bbox': bbox, 'area': area}
             continue
-
-        # ★ v4 圖表保護：中心點落在圖表區 → 直接保留
-        cy_chk = min(y + ch // 2, h_img - 1)
-        cx_chk = min(x + cw // 2, w_img - 1)
-        if chart_mask[cy_chk, cx_chk]:
-            continue
-
-        # 行列對齊度
-        ys = list(range(y, min(y + ch, h_img)))
-        xs = list(range(x, min(x + cw, w_img)))
-        h_ratio = float(np.mean(h_in_line[ys])) if ys else 0.0
-        v_ratio = float(np.mean(v_in_line[xs])) if xs else 0.0
-        is_off_grid = h_ratio < 0.5 and v_ratio < 0.5
-
-        # 局部密度（中心點周圍）
-        cy = y + ch // 2
-        cx = x + cw // 2
-        local_density = float(density_map[min(cy, h_img - 1), min(cx, w_img - 1)])
-        is_isolated = local_density < 0.05
 
         # 形狀特徵
         bbox_area = max(cw * ch, 1)
         density = area / bbox_area
         aspect = cw / max(ch, 1)
 
-        # 投票（偏離行列 + 孤立 = 強信號，各 2 票）
+        # 細小符號 / 細長形（v9 rescue 條件）：永不自動擦除
+        is_tiny_symbol = 8 < area < 250 and density > 0.25 and 0.2 < aspect < 5.0
+        is_thin_shape = (
+            8 < area < 400
+            and (
+                (0.15 < aspect < 0.5 and ch < 40)
+                or (2.0 < aspect < 8.0 and cw < 60)
+            )
+        )
+        is_protected_shape = is_tiny_symbol or is_thin_shape
+
+        # 行列對齊度
+        h_ratio = float(np.mean(h_in_line[y:min(y + ch, h_img)])) if ch else 0.0
+        v_ratio = float(np.mean(v_in_line[x:min(x + cw, w_img)])) if cw else 0.0
+        is_off_grid = h_ratio < 0.5 and v_ratio < 0.5
+
+        # 局部密度（中心點周圍）
+        cy = min(y + ch // 2, h_img - 1)
+        cx = min(x + cw // 2, w_img - 1)
+        is_isolated = float(density_map[cy, cx]) < 0.05
+
+        # ★ v11: 筆畫濃度（比印刷墨水基準淡很多 = 手寫鉛筆/輕壓筆跡）
+        is_faint = area >= 15 and float(mean_intensity[label]) > ink_ref + 30
+
         votes = 0
         if is_off_grid:
             votes += 2
         if is_isolated:
+            votes += 2
+        if is_faint:
             votes += 2
         if density < 0.2:
             votes += 1
@@ -225,11 +268,56 @@ def _remove_gray_marks(enhanced: np.ndarray, binary: np.ndarray, chart_mask: np.
         if area > 4000:
             votes += 1
 
-        # 至少 2 票才判定為手寫
-        if votes >= 2:
-            cleaned[labels == label] = 255
+        if label in keep_set:
+            decisions[label] = {'erased': False, 'kind': 'restored', 'votes': votes, 'bbox': bbox, 'area': area}
+            continue
 
-    return cleaned
+        # 圖表保護：中心點落在圖表區 → 保留，但高票元件標成 candidate 供使用者手動擦
+        in_chart = bool(chart_mask[cy, cx])
+        if in_chart:
+            kind = 'candidate' if votes >= 2 else 'ink'
+            decisions[label] = {'erased': False, 'kind': kind, 'votes': votes, 'bbox': bbox, 'area': area}
+            continue
+
+        if votes >= 2 and not is_protected_shape:
+            decisions[label] = {'erased': True, 'kind': 'removed', 'votes': votes, 'bbox': bbox, 'area': area}
+        else:
+            kind = 'candidate' if votes >= 1 else 'ink'
+            decisions[label] = {'erased': False, 'kind': kind, 'votes': votes, 'bbox': bbox, 'area': area}
+
+    return decisions
+
+
+def _build_removed_mask(labels: np.ndarray, decisions: dict[int, dict]) -> np.ndarray:
+    """被擦除元件的像素 mask（bool）"""
+    erased_labels = [label for label, d in decisions.items() if d['erased']]
+    if not erased_labels:
+        return np.zeros(labels.shape, dtype=bool)
+    return np.isin(labels, np.asarray(erased_labels, dtype=labels.dtype))
+
+
+def _components_payload(decisions: dict[int, dict], max_items: int = 4000) -> list[dict]:
+    """
+    輸出給前端的元件清單（供互動式擦除 UI 使用）。
+    noise 不輸出；其餘全部輸出（含一般 ink，讓使用者可以點擊任意筆畫強制擦除）。
+    超過 max_items 時優先保留：removed/forced/restored > candidate > ink（按面積大到小）。
+    """
+    rank = {'removed': 0, 'forced': 0, 'restored': 0, 'candidate': 1, 'ink': 2}
+    items = [
+        {
+            'id': label,
+            'x': d['bbox'][0],
+            'y': d['bbox'][1],
+            'w': d['bbox'][2],
+            'h': d['bbox'][3],
+            'erased': d['erased'],
+            'kind': d['kind'],
+        }
+        for label, d in decisions.items()
+        if d['kind'] != 'noise' and d['area'] >= 15
+    ]
+    items.sort(key=lambda it: (rank.get(it['kind'], 3), -(it['w'] * it['h'])))
+    return items[:max_items]
 
 
 def _estimate_skew_angle(binary: np.ndarray) -> float:
@@ -252,13 +340,13 @@ def _rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
     return cv2.warpAffine(image, matrix, (width, height), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
 
 
-def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.ndarray, chart_mask: np.ndarray | None = None, darkness: float = 1.0) -> np.ndarray:
+def _smart_enhance(image: np.ndarray, binary: np.ndarray, chart_mask: np.ndarray | None = None, darkness: float = 1.0) -> np.ndarray:
     """
-    v10: 智慧雙向強化 + 細小符號保護 + 圖表保護 + 對比拉伸 + 可調黑度
+    v11: 智慧雙向強化 + 對比拉伸 + 可調黑度
 
+    細小符號 rescue 與圖表保護已移到 _classify_components（保留的元件
+    直接留在 binary 裡），這裡只負責：
     - 印刷字區域：對比拉伸 + gamma → 又黑又銳利、無光暈
-    - 細小符號（√、(A)、分數線、括號）：從原始 binary 救回保護
-    - 圖表/表格/幾何圖區域：強制視為印刷區（v10 新增），避免淡灰殘留清除誤殺
     - 非印刷區域：grayfilter 清除淡灰殘留
     - darkness: 0.5（較淡）~ 2.0（最深），預設 1.0
     """
@@ -266,44 +354,10 @@ def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.nd
     # 黑度範圍 clamp
     darkness = max(0.5, min(2.0, darkness))
 
-    # 1. v3 留下的印刷字
-    is_printed = binary < 128
+    # 保留下來的墨水（印刷字 + 被救回/保護的元件）
+    is_printed_strong = binary < 128
 
-    # 2. 救回細小符號 + 細長形（涵蓋括號、底線、上下標）
-    text_inv = 255 - original_binary
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(text_inv, connectivity=8)
-    rescued = np.zeros_like(original_binary, dtype=bool)
-    for label in range(1, num_labels):
-        cw = stats[label, cv2.CC_STAT_WIDTH]
-        ch = stats[label, cv2.CC_STAT_HEIGHT]
-        area = stats[label, cv2.CC_STAT_AREA]
-        bbox_area = max(cw * ch, 1)
-        density = area / bbox_area
-        aspect = cw / max(ch, 1)
-
-        # 細小且形狀規則
-        is_tiny_symbol = 8 < area < 250 and density > 0.25 and 0.2 < aspect < 5.0
-
-        # 細長形（括號、底線、分數線）
-        is_thin_shape = (
-            8 < area < 400
-            and (
-                (aspect > 0.15 and aspect < 0.5 and ch < 40)
-                or (aspect > 2.0 and aspect < 8.0 and cw < 60)
-            )
-        )
-
-        if is_tiny_symbol or is_thin_shape:
-            rescued |= (labels == label)
-
-    is_printed_strong = is_printed | rescued
-
-    # ★ v10: 圖表區內的所有原始筆畫都視為印刷區（保護座標軸、表格線、幾何圖）
-    if chart_mask is not None:
-        original_ink = original_binary < 128
-        is_printed_strong = is_printed_strong | (chart_mask & original_ink)
-
-    # 3. 印刷字保護 mask（5x5 dilate）
+    # 印刷字保護 mask（5x5 dilate）
     printed_dilated = cv2.dilate(
         (is_printed_strong * 255).astype(np.uint8),
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
@@ -351,16 +405,30 @@ def _smart_enhance(image: np.ndarray, binary: np.ndarray, original_binary: np.nd
     return np.clip(np.where(is_residue, 255, result_print), 0, 255).astype(np.uint8)
 
 
-def _build_soft_clean_image(gray: np.ndarray, binary: np.ndarray, original_binary: np.ndarray | None = None, chart_mask: np.ndarray | None = None, darkness: float = 1.0) -> np.ndarray:
-    """v10: 智慧雙向強化 + 細小符號保護 + 圖表保護 + 可調黑度"""
+def _build_soft_clean_image(gray: np.ndarray, binary: np.ndarray, chart_mask: np.ndarray | None = None, darkness: float = 1.0, removed_mask: np.ndarray | None = None) -> np.ndarray:
+    """
+    v11: 智慧雙向強化 + 可調黑度 + 被擦除元件強制洗白
+
+    ★ v11 關鍵修正：舊版只靠淡灰殘留濾鏡（210~248）清除手寫，
+    深色筆跡（黑筆、重壓鉛筆）在灰階合成圖上會留下明顯灰影。
+    現在直接把被擦除元件的像素（含 5px 暈染範圍）設成白色，
+    再用 ~ink mask 保護緊鄰的印刷筆畫不被誤洗。
+    """
     white_lifted = cv2.normalize(gray, None, 40, 255, cv2.NORM_MINMAX)
     white_canvas = np.full_like(white_lifted, 255)
     base = cv2.addWeighted(white_lifted, 0.72, white_canvas, 0.28, 0)
 
-    if original_binary is None:
-        original_binary = binary
+    if removed_mask is not None and removed_mask.any():
+        whiten = cv2.dilate(
+            removed_mask.astype(np.uint8) * 255,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            iterations=1,
+        ) > 0
+        # 不洗到保留下來的墨水（緊鄰的印刷筆畫）
+        whiten &= ~(binary < 128)
+        base[whiten] = 255
 
-    return _smart_enhance(base, binary, original_binary, chart_mask, darkness)
+    return _smart_enhance(base, binary, chart_mask, darkness)
 
 
 def _build_ocr_clean_image(gray: np.ndarray, binary: np.ndarray) -> np.ndarray:
@@ -396,7 +464,22 @@ def _write_png(output_path: Path, image: np.ndarray) -> Path:
     return output_path
 
 
-def cleanup_exam_image_opencv(input_path: Path, output_path: Path, ocr_output_path: Path | None = None, darkness: float = 1.0) -> CleanupArtifacts:
+def cleanup_exam_image_opencv(
+    input_path: Path,
+    output_path: Path,
+    ocr_output_path: Path | None = None,
+    darkness: float = 1.0,
+    keep_ids: list[int] | None = None,
+    erase_ids: list[int] | None = None,
+    collect_components: bool = False,
+) -> CleanupArtifacts:
+    """
+    v11 pipeline：元件分類 → 擦除 mask → 洗白合成
+
+    keep_ids / erase_ids 是使用者在互動式擦除 UI 的覆寫；
+    元件 id = connectedComponentsWithStats 的 label index，
+    同一張圖（同尺寸）重跑結果 deterministic，id 跨請求穩定。
+    """
     image = _load_image(input_path)
     image = _resize_if_needed(image)
     image = _remove_colored_marks(image)
@@ -405,9 +488,20 @@ def cleanup_exam_image_opencv(input_path: Path, output_path: Path, ocr_output_pa
     enhanced = _normalize_document_background(gray)
     original_binary = _binarize_document(enhanced)
     chart_mask = _detect_chart_regions(original_binary)
-    binary = _remove_gray_marks(enhanced, original_binary.copy(), chart_mask)
 
-    output = _build_soft_clean_image(enhanced, binary, original_binary, chart_mask, darkness)
+    cc = cv2.connectedComponentsWithStats(255 - original_binary, connectivity=8)
+    decisions = _classify_components(
+        enhanced, original_binary, chart_mask, cc,
+        keep_set=set(keep_ids or []),
+        erase_set=set(erase_ids or []),
+    )
+
+    labels = cc[1]
+    removed_mask = _build_removed_mask(labels, decisions)
+    binary = original_binary.copy()
+    binary[removed_mask] = 255
+
+    output = _build_soft_clean_image(enhanced, binary, chart_mask, darkness, removed_mask)
     ocr_output = _build_ocr_clean_image(enhanced, binary)
 
     _write_png(output_path, output)
@@ -415,7 +509,15 @@ def cleanup_exam_image_opencv(input_path: Path, output_path: Path, ocr_output_pa
     if ocr_output_path is not None:
         final_ocr_path = _write_png(ocr_output_path, ocr_output)
 
-    return CleanupArtifacts(processor='opencv', cleaned_path=output_path, ocr_path=final_ocr_path)
+    h, w = output.shape[:2]
+    return CleanupArtifacts(
+        processor='opencv',
+        cleaned_path=output_path,
+        ocr_path=final_ocr_path,
+        components=_components_payload(decisions) if collect_components else None,
+        image_width=w,
+        image_height=h,
+    )
 
 
 def has_unpaper() -> bool:
@@ -465,7 +567,16 @@ def cleanup_exam_image_unpaper(input_path: Path, output_path: Path, ocr_output_p
     return CleanupArtifacts(processor='unpaper', cleaned_path=output_path, ocr_path=final_ocr_path)
 
 
-def cleanup_exam_image(input_path: Path, output_path: Path, mode: CleanupMode = 'auto', ocr_output_path: Path | None = None, darkness: float = 1.0) -> CleanupArtifacts:
+def cleanup_exam_image(
+    input_path: Path,
+    output_path: Path,
+    mode: CleanupMode = 'auto',
+    ocr_output_path: Path | None = None,
+    darkness: float = 1.0,
+    keep_ids: list[int] | None = None,
+    erase_ids: list[int] | None = None,
+    collect_components: bool = False,
+) -> CleanupArtifacts:
     if mode == 'ai':
         from .ai_cleanup_erasenet import has_ai_cleanup, cleanup_exam_image_ai
         if not has_ai_cleanup():
@@ -476,10 +587,15 @@ def cleanup_exam_image(input_path: Path, output_path: Path, mode: CleanupMode = 
     if mode == 'unpaper':
         return cleanup_exam_image_unpaper(input_path, output_path, ocr_output_path)
 
-    if mode == 'auto' and has_unpaper():
+    # 有元件覆寫或需要元件清單時，一律走 OpenCV（unpaper 不支援）
+    needs_components = collect_components or keep_ids or erase_ids
+    if mode == 'auto' and has_unpaper() and not needs_components:
         try:
             return cleanup_exam_image_unpaper(input_path, output_path, ocr_output_path)
         except Exception:
             pass
 
-    return cleanup_exam_image_opencv(input_path, output_path, ocr_output_path, darkness)
+    return cleanup_exam_image_opencv(
+        input_path, output_path, ocr_output_path, darkness,
+        keep_ids=keep_ids, erase_ids=erase_ids, collect_components=collect_components,
+    )

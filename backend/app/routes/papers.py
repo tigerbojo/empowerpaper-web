@@ -1,4 +1,6 @@
-﻿import tempfile
+﻿import hashlib
+import json
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -22,10 +24,43 @@ router = APIRouter(prefix='/papers', tags=['papers'])
 papers_index: dict[str, Path] = {}
 
 
-def _build_local_clean_path(paper_id: str, mode: str, darkness: float = 1.0) -> Path:
+def _overrides_hash(keep_ids: list[int], erase_ids: list[int]) -> str:
+    """互動式擦除覆寫的 cache key 後綴（無覆寫時回傳空字串）"""
+    if not keep_ids and not erase_ids:
+        return ''
+    raw = json.dumps({'k': sorted(keep_ids), 'e': sorted(erase_ids)}, separators=(',', ':'))
+    return '-ov' + hashlib.sha1(raw.encode()).hexdigest()[:10]
+
+
+def _build_local_clean_path(paper_id: str, mode: str, darkness: float = 1.0, ov_hash: str = '') -> Path:
     dk_suffix = '' if abs(darkness - 1.0) < 0.01 else f'-d{int(darkness * 100)}'
-    suffix = ('cleaned' if mode == 'auto' else f'cleaned-{mode}') + dk_suffix
+    suffix = ('cleaned' if mode == 'auto' else f'cleaned-{mode}') + dk_suffix + ov_hash
     return storage.cleaned / f'{paper_id}-{suffix}.png'
+
+
+def _components_sidecar_path(cleaned_path: Path) -> Path:
+    return Path(str(cleaned_path) + '.json')
+
+
+def _write_components_sidecar(cleaned_path: Path, artifacts) -> None:
+    if artifacts.components is None:
+        return
+    sidecar = _components_sidecar_path(cleaned_path)
+    sidecar.write_text(json.dumps({
+        'components': artifacts.components,
+        'image_width': artifacts.image_width,
+        'image_height': artifacts.image_height,
+    }, separators=(',', ':')), encoding='utf-8')
+
+
+def _read_components_sidecar(cleaned_path: Path) -> dict | None:
+    sidecar = _components_sidecar_path(cleaned_path)
+    if not sidecar.exists():
+        return None
+    try:
+        return json.loads(sidecar.read_text(encoding='utf-8'))
+    except Exception:
+        return None
 
 
 def _build_local_ocr_path(paper_id: str, mode: str) -> Path:
@@ -237,25 +272,35 @@ async def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
     if payload.paper_id not in papers_index:
         raise HTTPException(status_code=404, detail='找不到對應的 paperId')
 
-    cleaned_path = _build_local_clean_path(payload.paper_id, payload.mode, payload.darkness)
+    ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids)
+    cleaned_path = _build_local_clean_path(payload.paper_id, payload.mode, payload.darkness, ov_hash)
     ocr_path = _build_local_ocr_path(payload.paper_id, payload.mode)
 
     if cleaned_path.exists():
-        return CleanPaperResponse(
-            paper_id=payload.paper_id,
-            job_id='existing',
-            status='completed',
-            cleaned_image_url=storage.public_url(cleaned_path),
-            ocr_image_url=storage.public_url(ocr_path) if ocr_path.exists() else None,
-            processor='opencv',
-            requested_mode=payload.mode,
-        )
+        sidecar = _read_components_sidecar(cleaned_path) if payload.include_components else None
+        # 需要元件清單但 sidecar 不在（舊版 cache）→ 落到下面重算
+        if not payload.include_components or sidecar:
+            return CleanPaperResponse(
+                paper_id=payload.paper_id,
+                job_id='existing',
+                status='completed',
+                cleaned_image_url=storage.public_url(cleaned_path),
+                ocr_image_url=storage.public_url(ocr_path) if ocr_path.exists() else None,
+                processor='opencv',
+                requested_mode=payload.mode,
+                components=(sidecar or {}).get('components'),
+                image_width=(sidecar or {}).get('image_width'),
+                image_height=(sidecar or {}).get('image_height'),
+            )
 
     try:
         original_path = papers_index[payload.paper_id]
         artifacts = cleanup_exam_image(
             original_path, cleaned_path, payload.mode, ocr_path, payload.darkness,
+            keep_ids=payload.keep_ids, erase_ids=payload.erase_ids,
+            collect_components=payload.include_components,
         )
+        _write_components_sidecar(artifacts.cleaned_path, artifacts)
         return CleanPaperResponse(
             paper_id=payload.paper_id,
             job_id='sync',
@@ -264,6 +309,9 @@ async def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
             ocr_image_url=storage.public_url(artifacts.ocr_path) if artifacts.ocr_path else None,
             processor=artifacts.processor,
             requested_mode=payload.mode,
+            components=artifacts.components,
+            image_width=artifacts.image_width,
+            image_height=artifacts.image_height,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'清理失敗：{exc}')
@@ -275,21 +323,37 @@ async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperRespons
     if not paper:
         raise HTTPException(status_code=404, detail='找不到對應的 paperId')
 
+    ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids)
     cleaned_path = storage.build_cleaned_path(payload.paper_id, payload.mode, payload.darkness)
+    if ov_hash:
+        cleaned_path = cleaned_path.replace('.png', f'{ov_hash}.png')
+    sidecar_path = f'{cleaned_path}.json'
 
-    # 檢查是否已處理過此 darkness
+    # 檢查是否已處理過此 darkness（僅限無覆寫的 base 結果；
+    # 覆寫結果 deterministic，但 registry 只記 darkness key，直接重算）
     cleaned_paths = paper.get('cleaned_paths') or {}
     darkness_key = str(round(payload.darkness, 2))
-    if darkness_key in cleaned_paths:
-        return CleanPaperResponse(
-            paper_id=payload.paper_id,
-            job_id='existing',
-            status='completed',
-            cleaned_image_url=storage.public_url(cleaned_paths[darkness_key]),
-            ocr_image_url=None,
-            processor='opencv',
-            requested_mode=payload.mode,
-        )
+    if not ov_hash and darkness_key in cleaned_paths:
+        components_doc = None
+        if payload.include_components:
+            try:
+                sidecar_local = storage.download_to_tmp(sidecar_path)
+                components_doc = json.loads(sidecar_local.read_text(encoding='utf-8'))
+            except Exception:
+                components_doc = None
+        if not payload.include_components or components_doc:
+            return CleanPaperResponse(
+                paper_id=payload.paper_id,
+                job_id='existing',
+                status='completed',
+                cleaned_image_url=storage.public_url(cleaned_paths[darkness_key]),
+                ocr_image_url=None,
+                processor='opencv',
+                requested_mode=payload.mode,
+                components=(components_doc or {}).get('components'),
+                image_width=(components_doc or {}).get('image_width'),
+                image_height=(components_doc or {}).get('image_height'),
+            )
 
     # 下載原圖到本地暫存
     try:
@@ -304,12 +368,22 @@ async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperRespons
     try:
         artifacts = cleanup_exam_image(
             original_local, tmp_out_path, payload.mode, None, payload.darkness,
+            keep_ids=payload.keep_ids, erase_ids=payload.erase_ids,
+            collect_components=payload.include_components,
         )
         # 上傳結果到 Supabase
         cleaned_bytes = artifacts.cleaned_path.read_bytes()
         storage.upload_bytes(cleaned_path, cleaned_bytes, 'image/png')
-        # 更新 papers table
-        storage.update_paper_cleaned(payload.paper_id, payload.darkness, cleaned_path)
+        if artifacts.components is not None:
+            sidecar_bytes = json.dumps({
+                'components': artifacts.components,
+                'image_width': artifacts.image_width,
+                'image_height': artifacts.image_height,
+            }, separators=(',', ':')).encode('utf-8')
+            storage.upload_bytes(sidecar_path, sidecar_bytes, 'application/json')
+        # 更新 papers table（覆寫結果不進 registry，避免污染 base cache）
+        if not ov_hash:
+            storage.update_paper_cleaned(payload.paper_id, payload.darkness, cleaned_path)
 
         return CleanPaperResponse(
             paper_id=payload.paper_id,
@@ -319,6 +393,9 @@ async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperRespons
             ocr_image_url=None,
             processor=artifacts.processor,
             requested_mode=payload.mode,
+            components=artifacts.components,
+            image_width=artifacts.image_width,
+            image_height=artifacts.image_height,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'清理失敗：{exc}')
