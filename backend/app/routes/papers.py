@@ -318,6 +318,7 @@ async def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
             components=artifacts.components,
             image_width=artifacts.image_width,
             image_height=artifacts.image_height,
+            sample_result=artifacts.sample_result,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'清理失敗：{exc}')
@@ -403,6 +404,7 @@ async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperRespons
             components=artifacts.components,
             image_width=artifacts.image_width,
             image_height=artifacts.image_height,
+            sample_result=artifacts.sample_result,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'清理失敗：{exc}')

@@ -63,6 +63,8 @@ class CleanPaperResponse(BaseModel):
     components: list[CleanComponent] | None = None
     image_width: int | None = None
     image_height: int | None = None
+    # 筆跡樣本匹配結果回饋（applied / matched / reason）
+    sample_result: dict | None = None
 
 
 class CleanJobResult(BaseModel):

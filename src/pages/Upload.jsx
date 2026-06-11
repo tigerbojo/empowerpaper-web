@@ -260,7 +260,28 @@ export default function Upload() {
       })
       if (result.cleanedImageUrl) {
         await adoptCleanResult(result)
-        pushToast({ tone: 'success', title: '已套用', description: '智慧擦除結果已更新。' })
+        // 筆跡樣本結果誠實回報：匹配了幾處、或為什麼沒生效
+        const sr = result.raw?.sample_result
+        if (samplePoints.length > 0 && sr) {
+          if (sr.applied) {
+            pushToast({
+              tone: 'success',
+              title: `筆跡樣本：匹配並擦除 ${sr.matched} 處`,
+              description: '效果不夠可以再標新的樣本疊加。',
+            })
+          } else {
+            pushToast({
+              tone: 'warning',
+              title: '筆跡樣本無法套用',
+              description:
+                sr.reason === 'indistinguishable'
+                  ? '這張考卷的筆跡與印刷在濃度/彩度/筆寬上太接近，樣本無法安全區分（硬套會誤殺印刷）。請改用「⬚ 框選擦除」或逐一點選。'
+                  : '樣本點沒有點到筆跡，請點在筆畫上再試一次。',
+            })
+          }
+        } else {
+          pushToast({ tone: 'success', title: '已套用', description: '智慧擦除結果已更新。' })
+        }
       }
     } catch (err) {
       pushToast({ tone: 'error', title: '套用失敗', description: err.message || '無法套用擦除變更' })

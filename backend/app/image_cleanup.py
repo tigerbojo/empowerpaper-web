@@ -22,6 +22,7 @@ class CleanupArtifacts:
     components: list[dict] | None = None
     image_width: int | None = None
     image_height: int | None = None
+    sample_result: dict | None = None
 
 
 def _load_image(path: Path) -> np.ndarray:
@@ -290,6 +291,7 @@ def _classify_components(
     # 萃取「這張卷的這支筆」的特徵（濃度/彩度/筆畫粗細），
     # 對全頁元件做貼身匹配 — 全域門檻做不到的 per-paper 校準。
     sample_match: np.ndarray | None = None
+    sample_info: dict | None = None
     if sample_points:
         ink_u8 = (original_binary == 0).astype(np.uint8)
         dt = cv2.distanceTransform(ink_u8, cv2.DIST_L2, 3).astype(np.float64)
@@ -316,21 +318,39 @@ def _classify_components(
             ex_w = float(np.median([dt_mean[l] for l in exemplar_labels]))
             i_spread = max(14.0, 2.0 * float(np.std([mean_intensity[l] for l in exemplar_labels])))
 
-            cand = (
-                (areas_all >= 15)
-                & (np.abs(mean_intensity - ex_i) <= i_spread)
-                & (np.abs(mean_chroma - ex_c) <= 12)
-                & (dt_mean >= 0.55 * ex_w) & (dt_mean <= 1.8 * ex_w)
-            )
-            cand[0] = False
-            # 安全閥：匹配面過廣（> 35% 元件）= 筆跡與印刷在特徵上不可分，
-            # 樣本訊號失去鑑別力，放棄套用（避免整頁印刷被掃掉）
+            # 漸進收緊：匹配面 > 35% 表示範圍太鬆（筆跡與印刷特徵接近），
+            # 逐步縮小灰度容差搶救「最像樣本」的那批；縮到 5 還是太廣
+            # 才放棄（= 特徵物理不可分），並回報原因
             n_comps = int((areas_all[1:] >= 15).sum())
-            if n_comps > 0 and int(cand.sum()) / n_comps <= 0.35:
-                sample_match = cand
-            for l in exemplar_labels:
-                if sample_match is not None:
+            for spread in [i_spread, 10.0, 7.0, 5.0]:
+                if spread > i_spread:
+                    continue
+                cand = (
+                    (areas_all >= 15)
+                    & (np.abs(mean_intensity - ex_i) <= spread)
+                    & (np.abs(mean_chroma - ex_c) <= 12)
+                    & (dt_mean >= 0.55 * ex_w) & (dt_mean <= 1.8 * ex_w)
+                )
+                cand[0] = False
+                if n_comps > 0 and int(cand.sum()) / n_comps <= 0.35:
+                    sample_match = cand
+                    break
+            if sample_match is not None:
+                for l in exemplar_labels:
                     sample_match[l] = True
+                sample_info = {
+                    'applied': True,
+                    'matched': int(sample_match.sum()),
+                    'reason': None,
+                }
+            else:
+                sample_info = {
+                    'applied': False,
+                    'matched': 0,
+                    'reason': 'indistinguishable',  # 筆跡與印刷特徵不可分
+                }
+        else:
+            sample_info = {'applied': False, 'matched': 0, 'reason': 'no_ink_at_points'}
 
     # ★ v12-D: 版面先驗 — 文字欄起始線。台灣考卷學生答案常用鉛筆寫在
     # 題號「左側的 margin」；褪色影印卷上鉛筆與印刷的濃度/紋理完全不可分，
@@ -546,7 +566,7 @@ def _classify_components(
             kind = 'candidate' if votes >= 1 else 'ink'
             decisions[label] = {'erased': False, 'kind': kind, 'votes': votes, 'bbox': bbox, 'area': area}
 
-    return decisions
+    return decisions, sample_info
 
 
 def _build_removed_mask(labels: np.ndarray, decisions: dict[int, dict]) -> np.ndarray:
@@ -754,7 +774,7 @@ def cleanup_exam_image_opencv(
     chart_mask = _detect_chart_regions(original_binary)
 
     cc = cv2.connectedComponentsWithStats(255 - original_binary, connectivity=8)
-    decisions = _classify_components(
+    decisions, sample_info = _classify_components(
         enhanced, original_binary, chart_mask, cc,
         keep_set=set(keep_ids or []),
         erase_set=set(erase_ids or []),
@@ -783,6 +803,7 @@ def cleanup_exam_image_opencv(
         components=_components_payload(decisions) if collect_components else None,
         image_width=w,
         image_height=h,
+        sample_result=sample_info,
     )
 
 
