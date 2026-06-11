@@ -98,6 +98,32 @@ DETECT_QUESTIONS_PROMPT = """你是考卷分析助手。請仔細觀察這張考
 只回傳 JSON，不要任何其他文字。"""
 
 
+DETECT_HANDWRITING_PROMPT = """你是考卷清理助手。這張考卷上有「印刷的題目內容」和「學生或老師後來手寫上去的筆跡」。
+
+請把所有【手寫筆跡】框出來，包含：
+- 鉛筆或原子筆寫的答案（字母、數字、文字）
+- 計算過程、塗鴉
+- 圈選記號、勾（✓）、叉（×）、刪除線、底線
+- 批改的分數、評語
+
+規則：
+1. 只框手寫的部分；印刷的題目文字、選項、圖表、表格絕對不要框
+2. 框要貼緊筆跡：一段連續的筆跡框成一個矩形，分散在不同位置的筆跡分開框
+3. 手寫常出現在：題號旁邊的答案、選項字母上的圈選、空白處的計算、頁面邊緣、填空底線上
+4. 寧可框小而準，不要框大片區域
+
+請以 JSON 格式回傳，所有座標都用 0~1 的相對比例（左上為原點）：
+
+{
+  "regions": [
+    {"x": 0.02, "y": 0.15, "w": 0.04, "h": 0.02},
+    {"x": 0.55, "y": 0.31, "w": 0.06, "h": 0.025}
+  ]
+}
+
+只回傳 JSON，不要任何其他文字。"""
+
+
 # ───────── Ollama provider ─────────
 
 class OllamaProvider:
@@ -158,12 +184,21 @@ class GeminiProvider:
             raise RuntimeError('未設定 EMPOWERPAPER_GEMINI_API_KEY')
 
     def detect_questions(self, image_bytes: bytes, timeout: float = 180.0) -> list[QuestionBox]:
+        parsed = self._generate(DETECT_QUESTIONS_PROMPT, image_bytes, timeout)
+        return _parse_questions(parsed)
+
+    def detect_handwriting(self, image_bytes: bytes, timeout: float = 180.0) -> list[tuple[float, float, float, float]]:
+        """讓 Gemini 標出手寫筆跡區域（normalized bbox）— 擦除管線的 AI 提示"""
+        parsed = self._generate(DETECT_HANDWRITING_PROMPT, image_bytes, timeout)
+        return _parse_regions(parsed)
+
+    def _generate(self, prompt: str, image_bytes: bytes, timeout: float = 180.0) -> dict:
         # gemini-2.5-flash 處理一張完整考卷約 25-45 秒，timeout 預設 180s
         b64 = base64.b64encode(image_bytes).decode('ascii')
         payload = {
             'contents': [{
                 'parts': [
-                    {'text': DETECT_QUESTIONS_PROMPT},
+                    {'text': prompt},
                     {'inline_data': {'mime_type': 'image/png', 'data': b64}},
                 ],
             }],
@@ -208,11 +243,9 @@ class GeminiProvider:
         try:
             data = json.loads(raw)
             content = data['candidates'][0]['content']['parts'][0]['text']
-            parsed = _extract_json(content)
+            return _extract_json(content)
         except (KeyError, IndexError, ValueError) as exc:
             raise RuntimeError(f'Gemini 回應格式異常：{exc}\n原始回應：{raw[:500]}')
-
-        return _parse_questions(parsed)
 
 
 # ───────── Helpers ─────────
@@ -246,6 +279,36 @@ def _parse_questions(parsed: dict) -> list[QuestionBox]:
             x=x, y=y, w=w, h=h,
             confidence=float(raw.get('confidence', 0.0) or 0.0),
         ))
+    return boxes
+
+
+def _parse_regions(parsed: dict) -> list[tuple[float, float, float, float]]:
+    """解析手寫區域回應 → [(x, y, w, h), ...] normalized"""
+    items = parsed.get('regions') if isinstance(parsed, dict) else None
+    if not isinstance(items, list):
+        raise RuntimeError(f'未找到 regions 陣列：{str(parsed)[:300]}')
+
+    boxes: list[tuple[float, float, float, float]] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            x = float(raw.get('x', 0))
+            y = float(raw.get('y', 0))
+            w = float(raw.get('w', 0))
+            h = float(raw.get('h', 0))
+        except (TypeError, ValueError):
+            continue
+        if w <= 0 or h <= 0:
+            continue
+        x = max(0.0, min(1.0, x))
+        y = max(0.0, min(1.0, y))
+        w = max(0.0, min(1.0 - x, w))
+        h = max(0.0, min(1.0 - y, h))
+        # 過大的框（> 35% 頁面）通常是模型把整段印刷誤框，丟掉
+        if w * h > 0.35:
+            continue
+        boxes.append((x, y, w, h))
     return boxes
 
 

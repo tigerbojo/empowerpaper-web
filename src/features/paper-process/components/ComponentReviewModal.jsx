@@ -21,6 +21,7 @@ export default function ComponentReviewModal({
   imageHeight,
   isApplying,
   onApply,
+  onAiHint,
   onClose,
   hasManualEdits,
 }) {
@@ -121,14 +122,25 @@ export default function ComponentReviewModal({
     })
   }
 
+  const collectOverrides = () => ({
+    keepIds: effective.filter((c) => c.autoErased && !c.erasedNow).map((c) => c.id),
+    eraseIds: effective.filter((c) => !c.autoErased && c.erasedNow).map((c) => c.id),
+  })
+
   const handleApply = () => {
-    const keepIds = effective.filter((c) => c.autoErased && !c.erasedNow).map((c) => c.id)
-    const eraseIds = effective.filter((c) => !c.autoErased && c.erasedNow).map((c) => c.id)
+    const { keepIds, eraseIds } = collectOverrides()
     // 清掉本地 overrides 與樣本點，套用後以後端新回傳的狀態為準
     // （樣本的效果已烘進重算結果；要加強就再標新的樣本）
     setOverrides({})
     setSamplePoints([])
     onApply(keepIds, eraseIds, samplePoints)
+  }
+
+  const handleAiHint = () => {
+    const { keepIds, eraseIds } = collectOverrides()
+    setOverrides({})
+    setSamplePoints([])
+    onAiHint(keepIds, eraseIds)
   }
 
   const rectStyle = (c) => {
@@ -331,6 +343,14 @@ export default function ComponentReviewModal({
           )}
           <div className="ml-auto flex items-center gap-2">
             {isApplying && <Spinner label="重新生成中…" />}
+            <Button
+              variant="secondary"
+              onClick={handleAiHint}
+              disabled={isApplying}
+              title="讓 Gemini 用視覺語義找出所有手寫區域加強擦除 — 專治筆跡與印刷濃度太接近的褪色考卷（約 30-90 秒）"
+            >
+              🤖 AI 找手寫
+            </Button>
             <Button variant="secondary" onClick={onClose} disabled={isApplying}>關閉</Button>
             <Button onClick={handleApply} disabled={isApplying || (changedCount === 0 && samplePoints.length === 0)}>
               套用變更

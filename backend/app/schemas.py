@@ -30,6 +30,9 @@ class CleanPaperRequest(BaseModel):
     erase_ids: list[int] = Field(default_factory=list)
     # 筆跡樣本點：使用者點 3-5 處筆跡，系統按樣本特徵舉一反三擦除同類
     sample_points: list[SamplePoint] = Field(default_factory=list)
+    # AI 找手寫：用 Gemini Vision 標出手寫區域加強擦除（語義判斷，
+    # 專治筆跡與印刷特徵不可分的褪色影印卷；每頁多 30-90 秒）
+    ai_hint: bool = False
     # 回傳元件清單（互動式擦除 UI 用）
     include_components: bool = False
 
@@ -65,6 +68,8 @@ class CleanPaperResponse(BaseModel):
     image_height: int | None = None
     # 筆跡樣本匹配結果回饋（applied / matched / reason）
     sample_result: dict | None = None
+    # AI 找手寫結果回饋（regions / matched）
+    ai_hint_result: dict | None = None
 
 
 class CleanJobResult(BaseModel):

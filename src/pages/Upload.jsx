@@ -290,6 +290,38 @@ export default function Upload() {
     }
   }
 
+  // AI 找手寫：Gemini 標出手寫區域 → 後端帶著提示重算（30-90 秒）
+  const handleAiHint = async (keepIds = [], eraseIds = []) => {
+    if (!currentPaperId) return
+    setReviewApplying(true)
+    pushToast({ tone: 'info', title: 'AI 正在找手寫…', description: 'Gemini 看整張考卷約需 30-90 秒，請稍候。' })
+    try {
+      const result = await cleanMutation.mutateAsync({
+        paperId: currentPaperId,
+        paper_id: currentPaperId,
+        mode: cleanupMode,
+        darkness: 1.0,
+        keep_ids: keepIds,
+        erase_ids: eraseIds,
+        ai_hint: true,
+        include_components: true,
+      })
+      if (result.cleanedImageUrl) {
+        await adoptCleanResult(result)
+        const hr = result.raw?.ai_hint_result
+        pushToast({
+          tone: 'success',
+          title: hr ? `AI 標出 ${hr.regions} 個手寫區域，加強擦除 ${hr.matched} 處` : 'AI 找手寫完成',
+          description: '誤刪的內容可在檢視中點紅框還原。',
+        })
+      }
+    } catch (err) {
+      pushToast({ tone: 'error', title: 'AI 找手寫失敗', description: err.message || '請稍後再試' })
+    } finally {
+      setReviewApplying(false)
+    }
+  }
+
   // 文件校正 modal
   const [cornerOpen, setCornerOpen] = useState(false)
   const [correctingUpload, setCorrectingUpload] = useState(false)
@@ -857,6 +889,7 @@ export default function Upload() {
           imageHeight={imageDims.height}
           isApplying={reviewApplying}
           onApply={handleReviewApply}
+          onAiHint={handleAiHint}
           onClose={() => setReviewOpen(false)}
           hasManualEdits={manualEditsRef.current}
         />

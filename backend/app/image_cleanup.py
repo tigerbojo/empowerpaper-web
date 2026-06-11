@@ -11,7 +11,7 @@ from .schemas import CleanupMode, CleanupProcessor
 
 # 擦除管線版本 — 進 cache key。演算法有感變更時 bump，
 # 否則舊的 cleaned cache 會把修復前的結果一直吐給使用者
-PIPELINE_VERSION = 'v13'
+PIPELINE_VERSION = 'v14'
 
 
 @dataclass
@@ -23,6 +23,7 @@ class CleanupArtifacts:
     image_width: int | None = None
     image_height: int | None = None
     sample_result: dict | None = None
+    ai_hint_result: dict | None = None
 
 
 def _load_image(path: Path) -> np.ndarray:
@@ -185,7 +186,8 @@ def _classify_components(
     erase_set: set[int],
     color_image: np.ndarray | None = None,
     sample_points: list[tuple[float, float]] | None = None,
-) -> dict[int, dict]:
+    hint_boxes: list[tuple[float, float, float, float]] | None = None,
+) -> tuple[dict[int, dict], dict | None]:
     """
     v11: 元件級分類（取代 v4 _remove_gray_marks 的 in-place 清除）
 
@@ -292,6 +294,7 @@ def _classify_components(
     # 對全頁元件做貼身匹配 — 全域門檻做不到的 per-paper 校準。
     sample_match: np.ndarray | None = None
     sample_info: dict | None = None
+    hint_erased_count = 0
     if sample_points:
         ink_u8 = (original_binary == 0).astype(np.uint8)
         dt = cv2.distanceTransform(ink_u8, cv2.DIST_L2, 3).astype(np.float64)
@@ -523,6 +526,17 @@ def _classify_components(
         # ★ v13: 與使用者標記的筆跡樣本特徵相符
         is_like_sample = bool(sample_match[label]) if sample_match is not None else False
 
+        # ★ v14: AI（Gemini Vision）標出的手寫區域。模型看的是語義
+        # （「這是後來寫上去的」），不受灰度/彩度與印刷重疊影響 —
+        # 褪色影印 + 鉛筆這類特徵不可分的卷只有這條路能自動處理
+        is_ai_hint = False
+        if hint_boxes:
+            ncx, ncy = cx / w_img, cy / h_img
+            for hx, hy, hw_, hh_ in hint_boxes:
+                if hx <= ncx <= hx + hw_ and hy <= ncy <= hy + hh_:
+                    is_ai_hint = True
+                    break
+
         votes = 0
         if is_off_grid:
             votes += off_grid_weight
@@ -535,6 +549,8 @@ def _classify_components(
         if is_margin:
             votes += 2
         if is_like_sample:
+            votes += 2
+        if is_ai_hint:
             votes += 2
         if is_oversized:
             votes += 1
@@ -560,13 +576,23 @@ def _classify_components(
 
         # 形狀保護不適用於 margin 區（欄位起始線外不會有印刷小符號）
         # 與筆跡樣本相符的元件同樣不受形狀保護（使用者親自示範的證據）
-        if votes >= 2 and (not is_protected_shape or is_margin or is_like_sample):
+        # AI hint 區內：只解除 small_glyph 保護（手寫圈/勾/叉常是低密度小形狀），
+        # 保留 thin_shape/tiny_symbol — 框內的填空底線與印刷選項字母不能誤殺
+        protection_active = is_protected_shape
+        if is_margin or is_like_sample:
+            protection_active = False
+        elif is_ai_hint and is_small_glyph and not (is_tiny_symbol or is_thin_shape or is_tall_bracket):
+            protection_active = False
+        if votes >= 2 and not protection_active:
             decisions[label] = {'erased': True, 'kind': 'removed', 'votes': votes, 'bbox': bbox, 'area': area}
+            if is_ai_hint:
+                hint_erased_count += 1
         else:
             kind = 'candidate' if votes >= 1 else 'ink'
             decisions[label] = {'erased': False, 'kind': kind, 'votes': votes, 'bbox': bbox, 'area': area}
 
-    return decisions, sample_info
+    hint_info = {'regions': len(hint_boxes), 'matched': hint_erased_count} if hint_boxes else None
+    return decisions, sample_info, hint_info
 
 
 def _build_removed_mask(labels: np.ndarray, decisions: dict[int, dict]) -> np.ndarray:
@@ -756,6 +782,7 @@ def cleanup_exam_image_opencv(
     erase_ids: list[int] | None = None,
     collect_components: bool = False,
     sample_points: list[tuple[float, float]] | None = None,
+    hint_boxes: list[tuple[float, float, float, float]] | None = None,
 ) -> CleanupArtifacts:
     """
     v11 pipeline：元件分類 → 擦除 mask → 洗白合成
@@ -774,12 +801,13 @@ def cleanup_exam_image_opencv(
     chart_mask = _detect_chart_regions(original_binary)
 
     cc = cv2.connectedComponentsWithStats(255 - original_binary, connectivity=8)
-    decisions, sample_info = _classify_components(
+    decisions, sample_info, hint_info = _classify_components(
         enhanced, original_binary, chart_mask, cc,
         keep_set=set(keep_ids or []),
         erase_set=set(erase_ids or []),
         color_image=image,
         sample_points=sample_points,
+        hint_boxes=hint_boxes,
     )
 
     labels = cc[1]
@@ -804,6 +832,7 @@ def cleanup_exam_image_opencv(
         image_width=w,
         image_height=h,
         sample_result=sample_info,
+        ai_hint_result=hint_info,
     )
 
 
@@ -864,6 +893,7 @@ def cleanup_exam_image(
     erase_ids: list[int] | None = None,
     collect_components: bool = False,
     sample_points: list[tuple[float, float]] | None = None,
+    hint_boxes: list[tuple[float, float, float, float]] | None = None,
 ) -> CleanupArtifacts:
     if mode == 'ai':
         from .ai_cleanup_erasenet import has_ai_cleanup, cleanup_exam_image_ai
@@ -876,7 +906,7 @@ def cleanup_exam_image(
         return cleanup_exam_image_unpaper(input_path, output_path, ocr_output_path)
 
     # 有元件覆寫或需要元件清單時，一律走 OpenCV（unpaper 不支援）
-    needs_components = collect_components or keep_ids or erase_ids or sample_points
+    needs_components = collect_components or keep_ids or erase_ids or sample_points or hint_boxes
     if mode == 'auto' and has_unpaper() and not needs_components:
         try:
             return cleanup_exam_image_unpaper(input_path, output_path, ocr_output_path)
@@ -886,5 +916,5 @@ def cleanup_exam_image(
     return cleanup_exam_image_opencv(
         input_path, output_path, ocr_output_path, darkness,
         keep_ids=keep_ids, erase_ids=erase_ids, collect_components=collect_components,
-        sample_points=sample_points,
+        sample_points=sample_points, hint_boxes=hint_boxes,
     )

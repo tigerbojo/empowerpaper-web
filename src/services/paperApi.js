@@ -10,8 +10,10 @@ export const paperApi = {
     })
   },
 
-  requestCleaning(payload) {
-    return apiClient.post('/papers/clean', payload)
+  requestCleaning(payload, config) {
+    // ai_hint 要等 Gemini 看圖（30-90 秒），timeout 放大
+    const timeout = payload?.ai_hint ? 300000 : undefined
+    return apiClient.post('/papers/clean', payload, { ...(timeout ? { timeout } : {}), ...config })
   },
 
   fetchCleanResult(jobId) {

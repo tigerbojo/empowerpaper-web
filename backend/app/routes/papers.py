@@ -24,13 +24,37 @@ router = APIRouter(prefix='/papers', tags=['papers'])
 papers_index: dict[str, Path] = {}
 
 
-def _overrides_hash(keep_ids: list[int], erase_ids: list[int], sample_points: list | None = None) -> str:
+def _overrides_hash(keep_ids: list[int], erase_ids: list[int], sample_points: list | None = None, hint_boxes: list | None = None) -> str:
     """互動式擦除覆寫的 cache key 後綴（無覆寫時回傳空字串）"""
     samples = [(round(p.x, 4), round(p.y, 4)) for p in (sample_points or [])]
-    if not keep_ids and not erase_ids and not samples:
+    hints = [tuple(round(v, 4) for v in b) for b in (hint_boxes or [])]
+    if not keep_ids and not erase_ids and not samples and not hints:
         return ''
-    raw = json.dumps({'k': sorted(keep_ids), 'e': sorted(erase_ids), 's': sorted(samples)}, separators=(',', ':'))
+    raw = json.dumps({'k': sorted(keep_ids), 'e': sorted(erase_ids), 's': sorted(samples), 'h': sorted(hints)}, separators=(',', ':'))
     return '-ov' + hashlib.sha1(raw.encode()).hexdigest()[:10]
+
+
+
+def _detect_hint_boxes(original_local: Path) -> list[tuple[float, float, float, float]]:
+    """AI 找手寫：把原圖縮到 1600px 丟給 Gemini，回 normalized 手寫區域"""
+    import numpy as np
+    img = cv2.imdecode(np.frombuffer(original_local.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=500, detail='無法讀取原圖')
+    h, w = img.shape[:2]
+    if max(h, w) > 1600:
+        scale = 1600 / max(h, w)
+        img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    ok, enc = cv2.imencode('.png', img)
+    if not ok:
+        raise HTTPException(status_code=500, detail='無法編碼圖片')
+    provider = get_provider()
+    if not hasattr(provider, 'detect_handwriting'):
+        raise HTTPException(status_code=501, detail='目前的 LLM provider 不支援手寫偵測')
+    try:
+        return provider.detect_handwriting(enc.tobytes())
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'AI 手寫偵測失敗：{exc}')
 
 
 def _build_local_clean_path(paper_id: str, mode: str, darkness: float = 1.0, ov_hash: str = '') -> Path:
@@ -277,7 +301,8 @@ async def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
     if payload.paper_id not in papers_index:
         raise HTTPException(status_code=404, detail='找不到對應的 paperId')
 
-    ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids, payload.sample_points)
+    hint_boxes = _detect_hint_boxes(papers_index[payload.paper_id]) if payload.ai_hint else None
+    ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids, payload.sample_points, hint_boxes)
     cleaned_path = _build_local_clean_path(payload.paper_id, payload.mode, payload.darkness, ov_hash)
     ocr_path = _build_local_ocr_path(payload.paper_id, payload.mode)
 
@@ -305,6 +330,7 @@ async def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
             keep_ids=payload.keep_ids, erase_ids=payload.erase_ids,
             collect_components=payload.include_components,
             sample_points=[(pt.x, pt.y) for pt in payload.sample_points],
+            hint_boxes=hint_boxes,
         )
         _write_components_sidecar(artifacts.cleaned_path, artifacts)
         return CleanPaperResponse(
@@ -319,6 +345,7 @@ async def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
             image_width=artifacts.image_width,
             image_height=artifacts.image_height,
             sample_result=artifacts.sample_result,
+            ai_hint_result=artifacts.ai_hint_result,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'清理失敗：{exc}')
@@ -330,7 +357,10 @@ async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperRespons
     if not paper:
         raise HTTPException(status_code=404, detail='找不到對應的 paperId')
 
-    ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids, payload.sample_points)
+    hint_boxes = None
+    if payload.ai_hint:
+        hint_boxes = _detect_hint_boxes(storage.download_to_tmp(paper['original_path']))
+    ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids, payload.sample_points, hint_boxes)
     cleaned_path = storage.build_cleaned_path(payload.paper_id, payload.mode, payload.darkness)
     cleaned_path = cleaned_path.replace('.png', f'{ov_hash}-{PIPELINE_VERSION}.png')
     sidecar_path = f'{cleaned_path}.json'
@@ -378,6 +408,7 @@ async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperRespons
             keep_ids=payload.keep_ids, erase_ids=payload.erase_ids,
             collect_components=payload.include_components,
             sample_points=[(pt.x, pt.y) for pt in payload.sample_points],
+            hint_boxes=hint_boxes,
         )
         # 上傳結果到 Supabase
         cleaned_bytes = artifacts.cleaned_path.read_bytes()
@@ -405,6 +436,7 @@ async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperRespons
             image_width=artifacts.image_width,
             image_height=artifacts.image_height,
             sample_result=artifacts.sample_result,
+            ai_hint_result=artifacts.ai_hint_result,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'清理失敗：{exc}')
