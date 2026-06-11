@@ -760,11 +760,13 @@ export default function Upload() {
                         已自動擦除 {components.filter((c) => c.erased).length} 處筆跡
                       </div>
                     </div>
-                    <div className="mt-2 text-xs text-slate-400">
-                      檢視每一處被擦掉的內容：誤刪的點一下還原、漏掉的點一下擦除。
+                    <div className="mt-2 text-xs leading-relaxed text-slate-400">
+                      👆 點選：誤刪的還原、漏掉的擦除<br />
+                      ⬚ 框選擦除：拖方框整片清除<br />
+                      🖊 筆跡樣本：鉛筆漏很多時，點 3-5 處讓系統舉一反三全頁清除
                     </div>
                     <Button size="sm" className="mt-3 w-full" onClick={() => setReviewOpen(true)}>
-                      檢視擦除結果
+                      開啟智慧擦除工具
                     </Button>
                   </div>
                 )}
