@@ -13,6 +13,12 @@ class UploadPaperResponse(BaseModel):
     status: Literal['uploaded'] = 'uploaded'
 
 
+class SamplePoint(BaseModel):
+    """使用者標記的筆跡樣本點（normalized 0~1 座標）"""
+    x: float
+    y: float
+
+
 class CleanPaperRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -22,6 +28,8 @@ class CleanPaperRequest(BaseModel):
     # 互動式擦除：使用者覆寫（元件 id 來自上一次回傳的 components）
     keep_ids: list[int] = Field(default_factory=list)
     erase_ids: list[int] = Field(default_factory=list)
+    # 筆跡樣本點：使用者點 3-5 處筆跡，系統按樣本特徵舉一反三擦除同類
+    sample_points: list[SamplePoint] = Field(default_factory=list)
     # 回傳元件清單（互動式擦除 UI 用）
     include_components: bool = False
 

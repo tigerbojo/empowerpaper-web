@@ -11,7 +11,7 @@ from .schemas import CleanupMode, CleanupProcessor
 
 # 擦除管線版本 — 進 cache key。演算法有感變更時 bump，
 # 否則舊的 cleaned cache 會把修復前的結果一直吐給使用者
-PIPELINE_VERSION = 'v12e'
+PIPELINE_VERSION = 'v13'
 
 
 @dataclass
@@ -183,6 +183,7 @@ def _classify_components(
     keep_set: set[int],
     erase_set: set[int],
     color_image: np.ndarray | None = None,
+    sample_points: list[tuple[float, float]] | None = None,
 ) -> dict[int, dict]:
     """
     v11: 元件級分類（取代 v4 _remove_gray_marks 的 in-place 清除）
@@ -284,6 +285,52 @@ def _classify_components(
     centers_x = stats[:, cv2.CC_STAT_LEFT] + stats[:, cv2.CC_STAT_WIDTH] // 2
     centers_y = stats[:, cv2.CC_STAT_TOP] + stats[:, cv2.CC_STAT_HEIGHT] // 2
     areas_all = stats[:, cv2.CC_STAT_AREA]
+
+    # ★ v13: 筆跡樣本匹配（exemplar matching）。使用者點 3-5 處筆跡，
+    # 萃取「這張卷的這支筆」的特徵（濃度/彩度/筆畫粗細），
+    # 對全頁元件做貼身匹配 — 全域門檻做不到的 per-paper 校準。
+    sample_match: np.ndarray | None = None
+    if sample_points:
+        ink_u8 = (original_binary == 0).astype(np.uint8)
+        dt = cv2.distanceTransform(ink_u8, cv2.DIST_L2, 3).astype(np.float64)
+        dt_mean = np.bincount(flat_labels, weights=dt.ravel(), minlength=num_labels) / counts
+
+        exemplar_labels: list[int] = []
+        for nx, ny in sample_points:
+            px = int(np.clip(nx * w_img, 0, w_img - 1))
+            py = int(np.clip(ny * h_img, 0, h_img - 1))
+            lbl = int(labels[py, px])
+            if lbl == 0:
+                # 點到空白 → 找 12px 半徑內最近的墨水元件
+                y0, y1 = max(0, py - 12), min(h_img, py + 13)
+                x0, x1 = max(0, px - 12), min(w_img, px + 13)
+                patch = labels[y0:y1, x0:x1]
+                nz = patch[patch > 0]
+                lbl = int(np.bincount(nz).argmax()) if nz.size else 0
+            if lbl > 0 and stats[lbl, cv2.CC_STAT_AREA] >= 8:
+                exemplar_labels.append(lbl)
+
+        if exemplar_labels:
+            ex_i = float(np.median([mean_intensity[l] for l in exemplar_labels]))
+            ex_c = float(np.median([mean_chroma[l] for l in exemplar_labels]))
+            ex_w = float(np.median([dt_mean[l] for l in exemplar_labels]))
+            i_spread = max(14.0, 2.0 * float(np.std([mean_intensity[l] for l in exemplar_labels])))
+
+            cand = (
+                (areas_all >= 15)
+                & (np.abs(mean_intensity - ex_i) <= i_spread)
+                & (np.abs(mean_chroma - ex_c) <= 12)
+                & (dt_mean >= 0.55 * ex_w) & (dt_mean <= 1.8 * ex_w)
+            )
+            cand[0] = False
+            # 安全閥：匹配面過廣（> 35% 元件）= 筆跡與印刷在特徵上不可分，
+            # 樣本訊號失去鑑別力，放棄套用（避免整頁印刷被掃掉）
+            n_comps = int((areas_all[1:] >= 15).sum())
+            if n_comps > 0 and int(cand.sum()) / n_comps <= 0.35:
+                sample_match = cand
+            for l in exemplar_labels:
+                if sample_match is not None:
+                    sample_match[l] = True
 
     # ★ v12-D: 版面先驗 — 文字欄起始線。台灣考卷學生答案常用鉛筆寫在
     # 題號「左側的 margin」；褪色影印卷上鉛筆與印刷的濃度/紋理完全不可分，
@@ -453,6 +500,9 @@ def _classify_components(
             and (x + cw) < col_x0 - 8
         )
 
+        # ★ v13: 與使用者標記的筆跡樣本特徵相符
+        is_like_sample = bool(sample_match[label]) if sample_match is not None else False
+
         votes = 0
         if is_off_grid:
             votes += off_grid_weight
@@ -463,6 +513,8 @@ def _classify_components(
         if is_colored:
             votes += 2
         if is_margin:
+            votes += 2
+        if is_like_sample:
             votes += 2
         if is_oversized:
             votes += 1
@@ -487,7 +539,8 @@ def _classify_components(
             continue
 
         # 形狀保護不適用於 margin 區（欄位起始線外不會有印刷小符號）
-        if votes >= 2 and (not is_protected_shape or is_margin):
+        # 與筆跡樣本相符的元件同樣不受形狀保護（使用者親自示範的證據）
+        if votes >= 2 and (not is_protected_shape or is_margin or is_like_sample):
             decisions[label] = {'erased': True, 'kind': 'removed', 'votes': votes, 'bbox': bbox, 'area': area}
         else:
             kind = 'candidate' if votes >= 1 else 'ink'
@@ -682,6 +735,7 @@ def cleanup_exam_image_opencv(
     keep_ids: list[int] | None = None,
     erase_ids: list[int] | None = None,
     collect_components: bool = False,
+    sample_points: list[tuple[float, float]] | None = None,
 ) -> CleanupArtifacts:
     """
     v11 pipeline：元件分類 → 擦除 mask → 洗白合成
@@ -705,6 +759,7 @@ def cleanup_exam_image_opencv(
         keep_set=set(keep_ids or []),
         erase_set=set(erase_ids or []),
         color_image=image,
+        sample_points=sample_points,
     )
 
     labels = cc[1]
@@ -787,6 +842,7 @@ def cleanup_exam_image(
     keep_ids: list[int] | None = None,
     erase_ids: list[int] | None = None,
     collect_components: bool = False,
+    sample_points: list[tuple[float, float]] | None = None,
 ) -> CleanupArtifacts:
     if mode == 'ai':
         from .ai_cleanup_erasenet import has_ai_cleanup, cleanup_exam_image_ai
@@ -799,7 +855,7 @@ def cleanup_exam_image(
         return cleanup_exam_image_unpaper(input_path, output_path, ocr_output_path)
 
     # 有元件覆寫或需要元件清單時，一律走 OpenCV（unpaper 不支援）
-    needs_components = collect_components or keep_ids or erase_ids
+    needs_components = collect_components or keep_ids or erase_ids or sample_points
     if mode == 'auto' and has_unpaper() and not needs_components:
         try:
             return cleanup_exam_image_unpaper(input_path, output_path, ocr_output_path)
@@ -809,4 +865,5 @@ def cleanup_exam_image(
     return cleanup_exam_image_opencv(
         input_path, output_path, ocr_output_path, darkness,
         keep_ids=keep_ids, erase_ids=erase_ids, collect_components=collect_components,
+        sample_points=sample_points,
     )

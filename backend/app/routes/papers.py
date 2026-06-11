@@ -24,11 +24,12 @@ router = APIRouter(prefix='/papers', tags=['papers'])
 papers_index: dict[str, Path] = {}
 
 
-def _overrides_hash(keep_ids: list[int], erase_ids: list[int]) -> str:
+def _overrides_hash(keep_ids: list[int], erase_ids: list[int], sample_points: list | None = None) -> str:
     """互動式擦除覆寫的 cache key 後綴（無覆寫時回傳空字串）"""
-    if not keep_ids and not erase_ids:
+    samples = [(round(p.x, 4), round(p.y, 4)) for p in (sample_points or [])]
+    if not keep_ids and not erase_ids and not samples:
         return ''
-    raw = json.dumps({'k': sorted(keep_ids), 'e': sorted(erase_ids)}, separators=(',', ':'))
+    raw = json.dumps({'k': sorted(keep_ids), 'e': sorted(erase_ids), 's': sorted(samples)}, separators=(',', ':'))
     return '-ov' + hashlib.sha1(raw.encode()).hexdigest()[:10]
 
 
@@ -276,7 +277,7 @@ async def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
     if payload.paper_id not in papers_index:
         raise HTTPException(status_code=404, detail='找不到對應的 paperId')
 
-    ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids)
+    ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids, payload.sample_points)
     cleaned_path = _build_local_clean_path(payload.paper_id, payload.mode, payload.darkness, ov_hash)
     ocr_path = _build_local_ocr_path(payload.paper_id, payload.mode)
 
@@ -303,6 +304,7 @@ async def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
             original_path, cleaned_path, payload.mode, ocr_path, payload.darkness,
             keep_ids=payload.keep_ids, erase_ids=payload.erase_ids,
             collect_components=payload.include_components,
+            sample_points=[(pt.x, pt.y) for pt in payload.sample_points],
         )
         _write_components_sidecar(artifacts.cleaned_path, artifacts)
         return CleanPaperResponse(
@@ -327,7 +329,7 @@ async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperRespons
     if not paper:
         raise HTTPException(status_code=404, detail='找不到對應的 paperId')
 
-    ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids)
+    ov_hash = _overrides_hash(payload.keep_ids, payload.erase_ids, payload.sample_points)
     cleaned_path = storage.build_cleaned_path(payload.paper_id, payload.mode, payload.darkness)
     cleaned_path = cleaned_path.replace('.png', f'{ov_hash}-{PIPELINE_VERSION}.png')
     sidecar_path = f'{cleaned_path}.json'
@@ -374,6 +376,7 @@ async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperRespons
             original_local, tmp_out_path, payload.mode, None, payload.darkness,
             keep_ids=payload.keep_ids, erase_ids=payload.erase_ids,
             collect_components=payload.include_components,
+            sample_points=[(pt.x, pt.y) for pt in payload.sample_points],
         )
         # 上傳結果到 Supabase
         cleaned_bytes = artifacts.cleaned_path.read_bytes()

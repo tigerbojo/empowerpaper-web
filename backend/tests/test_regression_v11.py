@@ -293,6 +293,49 @@ def test_v12_margin_pencil_answer_erased(synthetic_paper, tmp_path):
     assert float(area.mean()) > 235, 'margin 鉛筆答案沒被擦掉（v12-D margin 票失效）'
 
 
+def test_v13_sample_matching_erases_similar(tmp_path):
+    """v13：點一處筆跡樣本，全頁特徵相同的筆跡都要被擦掉（舉一反三）
+
+    場景：灰色筆跡（濃度與印刷有別但不夠淡、on-grid、小尺寸）—
+    既有投票全部接不住；使用者標記其中一筆後，其餘同特徵筆跡
+    必須透過 exemplar matching 一併清除，且印刷不受影響。
+    """
+    img = np.full((800, 1100, 3), 255, np.uint8)
+    rows = list(range(100, 560, 70))
+    stroke_rois = []
+    gap_map = {rows[1]: 388, rows[2]: 412, rows[3]: 436, rows[4]: 460, rows[5]: 484}
+    for y in rows:
+        for x in range(100, 1000, 24):
+            if y in gap_map and x == gap_map[y]:
+                continue
+            cv2.rectangle(img, (x, y), (x + 12, y + 16), (10, 10, 10), -1)
+    # 5 筆同特徵的深灰筆跡（60 灰、3px），各塞在不同行的格點空隙
+    # —— 夠深所以濃淡/殘留濾鏡都接不住，但細筆畫+灰階特徵與印刷可分
+    for y, gx in gap_map.items():
+        cv2.line(img, (gx + 1, y + 13), (gx + 11, y + 3), (60, 60, 60), 3)
+        stroke_rois.append((gx, y + 1, 13, 16))
+    path = tmp_path / 'sample_synth.png'
+    imwrite_u(path, img)
+
+    # baseline：不給樣本 → 灰筆跡應該全部存活（證明既有投票接不住）
+    _, gray0 = run_cleanup(path, tmp_path, 's_base')
+    survivors = sum(1 for roi in stroke_rois if float(roi_pixels(gray0, roi).min()) < 200)
+    assert survivors >= 4, f'前提不成立：基準管線已清掉灰筆跡（survivors={survivors}）'
+
+    # 標記第一筆為樣本 → 其餘同特徵筆跡全部清除
+    sx, sy = gap_map[rows[1]] + 6, rows[1] + 8
+    art, gray1 = run_cleanup(
+        path, tmp_path, 's_marked',
+        sample_points=[(sx / 1100, sy / 800)],
+    )
+    for i, roi in enumerate(stroke_rois):
+        area = roi_pixels(gray1, roi)
+        assert float(area.mean()) > 230, f'樣本匹配漏掉第 {i+1} 筆灰筆跡'
+    # 印刷塊不受影響
+    printed = roi_pixels(gray1, (100, rows[0] - 2, 800, 24))
+    assert float(printed.min()) < 120, '樣本匹配誤殺印刷內容'
+
+
 def test_bug_r5_no_fake_progress_fallback():
     """BUG-R5：前端不得再出現 simulateProcessing 假進度條；失敗路徑要有重試"""
     upload_jsx = (BACKEND.parent / 'src' / 'pages' / 'Upload.jsx').read_text(encoding='utf-8')

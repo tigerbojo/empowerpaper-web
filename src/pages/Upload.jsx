@@ -243,8 +243,8 @@ export default function Upload() {
     setEraserOpen(false)
   }
 
-  // 智慧擦除：套用使用者的元件級覆寫，後端重算一次
-  const handleReviewApply = async (keepIds, eraseIds) => {
+  // 智慧擦除：套用使用者的元件級覆寫 + 筆跡樣本點，後端重算一次
+  const handleReviewApply = async (keepIds, eraseIds, samplePoints = []) => {
     if (!currentPaperId) return
     setReviewApplying(true)
     try {
@@ -255,6 +255,7 @@ export default function Upload() {
         darkness: 1.0,
         keep_ids: keepIds,
         erase_ids: eraseIds,
+        sample_points: samplePoints,
         include_components: true,
       })
       if (result.cleanedImageUrl) {

@@ -31,12 +31,15 @@ export default function ComponentReviewModal({
   // 對照原始考卷：被筆跡完全蓋住的印刷內容無法自動還原，
   // 切回原圖讓使用者判讀被遮蓋處的原始內容
   const [compareOriginal, setCompareOriginal] = useState(false)
-  // 工具：click = 點選單一元件；box = 拖框批次擦除
+  // 工具：click = 點選單一元件；box = 拖框批次擦除；sample = 標記筆跡樣本
   // （框內元件全是擦除狀態時改為批次還原 — 拖同一區兩次等於 undo）
   const [tool, setTool] = useState('click')
   const wrapRef = useRef(null)
   const [boxStart, setBoxStart] = useState(null)   // 影像座標
   const [boxRect, setBoxRect] = useState(null)     // {x,y,w,h} 影像座標
+  // 筆跡樣本點（normalized 0~1）：點 3-5 處筆跡，套用時讓後端按樣本
+  // 特徵（濃度/彩度/筆寬）舉一反三擦除全頁同類筆跡
+  const [samplePoints, setSamplePoints] = useState([])
 
   const toImageCoords = (e) => {
     const r = wrapRef.current.getBoundingClientRect()
@@ -46,7 +49,20 @@ export default function ComponentReviewModal({
     }
   }
 
+  const handleSampleClick = (e) => {
+    if (tool !== 'sample' || !wrapRef.current) return
+    const p = toImageCoords(e)
+    setSamplePoints((prev) => {
+      if (prev.length >= 8) return prev
+      return [...prev, { x: p.x / imageWidth, y: p.y / imageHeight }]
+    })
+  }
+
   const handleBoxDown = (e) => {
+    if (tool === 'sample') {
+      handleSampleClick(e)
+      return
+    }
     if (tool !== 'box' || !wrapRef.current) return
     e.preventDefault()
     setBoxStart(toImageCoords(e))
@@ -108,9 +124,11 @@ export default function ComponentReviewModal({
   const handleApply = () => {
     const keepIds = effective.filter((c) => c.autoErased && !c.erasedNow).map((c) => c.id)
     const eraseIds = effective.filter((c) => !c.autoErased && c.erasedNow).map((c) => c.id)
-    // 清掉本地 overrides，套用後以後端新回傳的狀態為準
+    // 清掉本地 overrides 與樣本點，套用後以後端新回傳的狀態為準
+    // （樣本的效果已烘進重算結果；要加強就再標新的樣本）
     setOverrides({})
-    onApply(keepIds, eraseIds)
+    setSamplePoints([])
+    onApply(keepIds, eraseIds, samplePoints)
   }
 
   const rectStyle = (c) => {
@@ -153,7 +171,7 @@ export default function ComponentReviewModal({
               👆 點選
             </button>
             <button
-              onClick={() => { setTool('box'); setShowInk(true) }}
+              onClick={() => setTool('box')}
               className={`rounded-md px-2 py-1 font-medium transition ${
                 tool === 'box' ? 'bg-amber-400/25 text-amber-200' : 'text-slate-400 hover:text-slate-200'
               }`}
@@ -161,7 +179,30 @@ export default function ComponentReviewModal({
             >
               ⬚ 框選擦除
             </button>
+            <button
+              onClick={() => setTool('sample')}
+              className={`rounded-md px-2 py-1 font-medium transition ${
+                tool === 'sample' ? 'bg-violet-400/25 text-violet-200' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="點 3-5 處筆跡當樣本，套用時系統按樣本特徵擦除全頁同類筆跡"
+            >
+              🖊 筆跡樣本{samplePoints.length > 0 ? `(${samplePoints.length})` : ''}
+            </button>
+            {samplePoints.length > 0 && (
+              <button
+                onClick={() => setSamplePoints([])}
+                className="rounded-md px-2 py-1 text-slate-500 hover:text-slate-300"
+                title="清除所有樣本點"
+              >
+                ✕
+              </button>
+            )}
           </div>
+          {tool === 'sample' && (
+            <span className="text-violet-300">
+              在不同位置點 3-5 處筆跡（建議含最淡和最深的），按「套用變更」生效
+            </span>
+          )}
           <span className="flex items-center gap-1.5">
             <span className="inline-block h-3 w-3 rounded-sm border-2 border-rose-500 bg-rose-500/20" />
             將擦除（{erasedCount}）
@@ -212,7 +253,7 @@ export default function ComponentReviewModal({
           <div
             ref={wrapRef}
             className="relative"
-            style={{ width: `${zoom}%`, cursor: tool === 'box' ? 'crosshair' : 'default' }}
+            style={{ width: `${zoom}%`, cursor: tool === 'click' ? 'default' : 'crosshair' }}
             onMouseDown={handleBoxDown}
             onMouseMove={handleBoxMove}
             onMouseUp={handleBoxUp}
@@ -229,7 +270,7 @@ export default function ComponentReviewModal({
                 className="absolute inset-0 h-full w-full"
                 viewBox={`0 0 ${imageWidth} ${imageHeight}`}
                 preserveAspectRatio="none"
-                style={{ pointerEvents: tool === 'box' ? 'none' : 'auto' }}
+                style={{ pointerEvents: tool === 'click' ? 'auto' : 'none' }}
               >
                 {visible.map((c) => {
                   const s = rectStyle(c)
@@ -254,6 +295,17 @@ export default function ComponentReviewModal({
                 })}
               </svg>
             )}
+
+            {/* 筆跡樣本標記（紫色圓點） */}
+            {samplePoints.map((p, i) => (
+              <div
+                key={`sample-${i}`}
+                className="pointer-events-none absolute flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-violet-500 bg-violet-400/40 text-[10px] font-bold text-white shadow"
+                style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%` }}
+              >
+                {i + 1}
+              </div>
+            ))}
 
             {/* 框選拖曳預覽 */}
             {boxRect && imageWidth > 0 && (
@@ -280,8 +332,10 @@ export default function ComponentReviewModal({
           <div className="ml-auto flex items-center gap-2">
             {isApplying && <Spinner label="重新生成中…" />}
             <Button variant="secondary" onClick={onClose} disabled={isApplying}>關閉</Button>
-            <Button onClick={handleApply} disabled={isApplying || changedCount === 0}>
-              套用變更{changedCount > 0 ? `（${changedCount}）` : ''}
+            <Button onClick={handleApply} disabled={isApplying || (changedCount === 0 && samplePoints.length === 0)}>
+              套用變更
+              {changedCount > 0 ? `（${changedCount}）` : ''}
+              {samplePoints.length > 0 ? `＋${samplePoints.length} 樣本` : ''}
             </Button>
           </div>
         </div>
