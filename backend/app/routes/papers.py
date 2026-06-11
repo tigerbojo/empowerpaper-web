@@ -289,15 +289,15 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadPaperResponse:
 
 
 @router.post('/clean', response_model=CleanPaperResponse)
-async def clean_paper(payload: CleanPaperRequest) -> CleanPaperResponse:
+def clean_paper(payload: CleanPaperRequest) -> CleanPaperResponse:
     """同步處理（適用於 Cloud Run）"""
 
     if settings.use_supabase:
-        return await _clean_paper_supabase(payload)
-    return await _clean_paper_local(payload)
+        return _clean_paper_supabase(payload)
+    return _clean_paper_local(payload)
 
 
-async def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
+def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
     if payload.paper_id not in papers_index:
         raise HTTPException(status_code=404, detail='找不到對應的 paperId')
 
@@ -351,7 +351,7 @@ async def _clean_paper_local(payload: CleanPaperRequest) -> CleanPaperResponse:
         raise HTTPException(status_code=500, detail=f'清理失敗：{exc}')
 
 
-async def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperResponse:
+def _clean_paper_supabase(payload: CleanPaperRequest) -> CleanPaperResponse:
     """Supabase 版：先查 DB，若已有結果直接回傳；否則下載原圖→處理→上傳"""
     paper = storage.get_paper(payload.paper_id)
     if not paper:

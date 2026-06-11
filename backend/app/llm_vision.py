@@ -218,10 +218,11 @@ class GeminiProvider:
             method='POST',
         )
 
-        # 503/429 retry：Gemini free tier 偶爾 overloaded 或 quota，
-        # 退避重試 3 次（2s → 5s → 10s）
+        # 503/429 retry：Gemini free tier 的 overload 窗口可長達 1-2 分鐘，
+        # 短退避扛不住 — 拉長退避（總計約 2 分鐘）才能騎過壅塞
+        backoffs = [3, 8, 15, 30, 60]
         last_exc = None
-        for attempt, backoff in enumerate([2, 5, 10]):
+        for attempt, backoff in enumerate(backoffs):
             try:
                 with urlreq.urlopen(req, timeout=timeout) as resp:
                     raw = resp.read().decode('utf-8')
@@ -229,7 +230,7 @@ class GeminiProvider:
             except urlerr.HTTPError as exc:
                 last_exc = exc
                 if exc.code in (429, 500, 502, 503, 504):
-                    logger.warning(f'Gemini {exc.code}, retry in {backoff}s (attempt {attempt + 1}/3)')
+                    logger.warning(f'Gemini {exc.code}, retry in {backoff}s (attempt {attempt + 1}/{len(backoffs)})')
                     import time
                     time.sleep(backoff)
                     continue
@@ -238,7 +239,7 @@ class GeminiProvider:
                 last_exc = exc
                 raise RuntimeError(f'Gemini 連線失敗：{exc}')
         else:
-            raise RuntimeError(f'Gemini 連續 503/429（已重試 3 次）：{last_exc}')
+            raise RuntimeError(f'Gemini 持續過載（已重試 {len(backoffs)} 次仍 503/429），請稍後再按一次：{last_exc}')
 
         try:
             data = json.loads(raw)
